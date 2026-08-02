@@ -2,7 +2,32 @@
 
 Working context for the Polymarket Integration Platform. **Keep this file current** — see [Maintenance Protocol](#maintenance-protocol) at the bottom.
 
-> **Last updated:** 2026-08-02 · **Phase:** pre-implementation (no code yet) · **Repo:** not yet initialized
+> **Last updated:** 2026-08-02 · **Phase:** Milestone 1 in progress · **Repo:** initialized, 1 commit
+
+## Layout
+
+```
+src/
+  middleware.ts            geo gate (Edge — NOT proxy.ts, see below)
+  app/
+    restricted/            geoblocked landing
+    api/health             secret presence + builder readiness
+    api/geoblock           per-request geo tier (never cached)
+    api/wallet/deploy      Deposit Wallet provisioning
+    api/orders             order placement (security-critical)
+  lib/
+    env.ts                 request-time secrets via getCloudflareContext
+    geo/{jurisdictions,edge,index}.ts
+    auth/{types,privy,session}.ts
+    polymarket/{config,fees,builder,clob}.ts
+scripts/
+  check-client-bundle.mjs  CI leak guard
+  smoke-builder.mjs        Milestone 1 acceptance, run when P-1..P-5 land
+```
+
+**Commands:** `npm run dev` · `lint` · `typecheck` · `test` · `build` · `check:secrets` · `preview` · `deploy` · `smoke:builder`
+
+**Mock mode.** With no builder credentials set, the app builds and every path runs, but no order is signed. `/api/health` reports `mode` and which of P-1…P-9 are missing.
 
 ---
 
@@ -28,7 +53,7 @@ Nothing is built. The directory is empty — no `package.json`, no git repo.
 
 | ID | Blocking question |
 |---|---|
-| OI-4 | Which embedded wallet provider — Privy, Turnkey, or Magic? Blocks Week 1. |
+| ~~OI-4~~ | ✅ **Resolved: Privy.** Confirmed by a first-party `@polymarket/client/privy` signer — the embedded wallet plugs straight into order signing. Provider still sits behind `lib/auth/types.ts` so a switch is contained. |
 | OI-5 | Copy trading vs. non-custodial architecture — irreconcilable as specified. Needs a product + legal call. |
 | OI-1 | Is the target market inside the close-only geoblock list (US/UK/EU)? |
 | OI-3 | Where does the copy-trade daemon run? Not Cloudflare Workers. |
@@ -60,7 +85,8 @@ Nothing is built. The directory is empty — no `package.json`, no git repo.
 
 | Rule | Why |
 |---|---|
-| Geoblock gate lives in **`src/proxy.ts`**, export named `proxy` | `middleware.ts` is deprecated + Edge-only. **`proxy` runs Node runtime** and can't be set to Edge — better for our outbound geoblock fetch |
+| ⚠️ Geo gate stays in **`src/middleware.ts`** (Edge), **not `proxy.ts`** | **OpenNext cannot build Next 16 Node middleware** — hard failure, [opennextjs-cloudflare#962](https://github.com/opennextjs/opennextjs-cloudflare/issues/962). `proxy` is Node-only and unconfigurable, so Edge `middleware.ts` is the only form that deploys. Next prints a deprecation warning on every build; that is expected. Revisit when OpenNext adds support |
+| Edge-safe geo code lives in `lib/geo/edge.ts`; `lib/geo/index.ts` is the `server-only` re-export | Middleware runs on Edge and cannot import `server-only` |
 | `await cookies()`, `await headers()`, `await params`, `await searchParams` | Sync access fully **removed** in 16. Use `npx next typegen` → `PageProps<'/market/[slug]'>` |
 | `cacheComponents: true`; caching is opt-in via `use cache` | Everything dynamic by default. **Never `use cache` anything price-derived** — a cached price is a correctness bug |
 | `revalidateTag('tag', 'max')` — 2 args | Single-arg form is a TS error in 16. `updateTag()` for read-your-writes in Server Actions |
@@ -129,6 +155,20 @@ Taker cap **100 bps**, maker cap **50 bps**, 1 bps granularity. `fee = notional 
 **100 relay tx/day is shared across dev, QA, and demos.** Every Deposit Wallet deployment spends one. Call `getDeployed()` before deploying, reuse test wallets, don't burn deploys on throwaway accounts.
 
 **No testnet for the production CLOB.** Milestone 1 acceptance requires a real mainnet order. Client must fund the builder wallet with ~$50 pUSD for testing.
+
+**Cache Components breaks pages that read `headers()`/`cookies()` outside `<Suspense>`.** Not a warning — the build fails with "Uncached data was accessed outside of `<Suspense>`". Wrap the dynamic part in a child component inside `<Suspense>`; the route then renders as `◐ Partial Prerender`. Hit this on `/restricted`.
+
+**`@polymarket/builder-relayer-client` is redundant.** `@polymarket/client` already exports `deployDepositWallet`, `isWalletDeployed`, `setupTradingApprovals`. Removed it — the Worker bundle is near the size limit and a second SDK is dead weight.
+
+**Standalone actions are on the `/actions` subpath**, not the root: `import { deployDepositWallet, isWalletDeployed } from "@polymarket/client/actions"`. But `placeMarketOrder`, `fetchClosedOnlyMode`, `listBuilderTrades`, `setupTradingApprovals` **are** client methods. The split is not obvious — check `dist/actions/index.d.ts` before assuming.
+
+**Privy peer conflict — install with `--legacy-peer-deps`.** Privy's optional `permissionless` peer wants `ox@^0.8`; the Polymarket viem stack pulls `ox@0.14`. We don't use `permissionless` (Polymarket has its own Relayer, no ERC-4337), so the mismatch is inert. CI does the same.
+
+**Privy issues two tokens.** `privy-token` (access, authenticates) and `privy-id-token` (identity, carries linked accounts). The embedded wallet address/id come from the identity token — verifying only the access token gets you a user with no wallet.
+
+**Bundle is at 2.90 MiB gzipped with almost no UI.** The 3 MiB free-tier cap will be exceeded as soon as real screens land. Workers **Paid** is not optional (P-7). Watch this number.
+
+**`tsc` caches aggressively.** After changing `tsconfig.json`, delete `*.tsbuildinfo` or you will debug errors that no longer exist.
 
 **Geoblocking is absent from the client SRS.** Three tiers, all must be enforced:
 - **Blocked** (no trading at all): Iran, Syria, Cuba, North Korea, Crimea/Donetsk/Luhansk

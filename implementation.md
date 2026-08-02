@@ -289,12 +289,18 @@ This is a launch blocker and shapes every downstream flow. Building it now means
 - Model four states: `blocked` / `close-only` / `frontend-restricted` / `allowed`.
 - **`src/proxy.ts`** gates `(app)` routes; close-only users reach portfolio and *closing* actions but never an open-position ticket.
 
-⚠️ **Next 16: use `proxy.ts`, not `middleware.ts`.** The named export is `proxy`, not `middleware`:
+⚠️ **Use Edge `middleware.ts` — NOT `proxy.ts`.** *(Corrected during the Milestone 1 build; the earlier plan said the opposite.)*
+
+Next 16 renamed middleware to `proxy` and made it Node-runtime-only. But **`@opennextjs/cloudflare` cannot build Node middleware** — it fails hard with `Node.js middleware is not currently supported` ([opennextjs-cloudflare#962](https://github.com/opennextjs/opennextjs-cloudflare/issues/962)). Since `proxy` cannot be set to Edge, the only form that deploys to Workers today is the deprecated Edge `middleware.ts`:
 ```ts
-// src/proxy.ts
-export async function proxy(request: Request) { /* geoblock gate */ }
+// src/middleware.ts
+export async function middleware(request: NextRequest) { /* geoblock gate */ }
 ```
-`proxy` runs the **Node.js runtime** and cannot be configured to Edge — which is an advantage here, since the gate does an outbound fetch and cookie work without Edge-runtime restrictions. `middleware.ts` still functions but is deprecated and Edge-only. Config flags renamed too (`skipMiddlewareUrlNormalize` → `skipProxyUrlNormalize`).
+Next prints a deprecation warning on every build — expected, not a defect. Practical cost is low: the gate only does a fetch plus string/Set comparisons, all Edge-compatible. Route handlers still run on Node via OpenNext, so **EIP-712 signing is unaffected**.
+
+Because Edge code cannot import `server-only`, the geo implementation lives in `lib/geo/edge.ts`, with `lib/geo/index.ts` as the `server-only` re-export for server callers.
+
+Revisit when OpenNext ships Node middleware support; the gate then becomes `proxy.ts` unchanged.
 
 ✅ **Done when:** all four states render correct UI, verified with a forced override flag in dev.
 
@@ -598,3 +604,4 @@ Also unresolved:
 |---|---|
 | 2026-08-02 | Initial plan. Corrected deployment target from Cloudflare Pages → Workers + OpenNext (§2.1); added client prerequisites (§1); pulled the builder-attribution test order forward into Milestone 1 |
 | 2026-08-02 | **Target set to Next.js 16** (§2.2). Next.js 14 is past OpenNext's Q1 2026 EOL. Updated: geoblock gate `middleware.ts` → `proxy.ts` (Node runtime, Step 1.4); async `cookies`/`params`/`searchParams` (Steps 1.5, 2.4); caching rewritten for Cache Components + `use cache` (Step 2.2); ESLint CLI now a separate CI step (Step 1.2); scaffold config for Turbopack/`images.remotePatterns` (Step 1.1); Workers **Paid** plan added to P-7 |
+| 2026-08-02 | **Milestone 1 build.** ⚠️ **Step 1.4 reversed: the gate is Edge `middleware.ts`, not `proxy.ts`** — OpenNext cannot build Next 16 Node middleware ([#962](https://github.com/opennextjs/opennextjs-cloudflare/issues/962)); the previous entry's guidance was wrong for our deployment target. OI-4 resolved to Privy. `builder-relayer-client` dropped as redundant. Workers **Paid** confirmed empirically (2.90 MiB gzipped with no UI yet vs a 3 MiB free cap) |
