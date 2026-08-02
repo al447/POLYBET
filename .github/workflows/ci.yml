@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      # Privy's optional `permissionless` peer wants ox@^0.8 while the
+      # Polymarket viem stack pulls ox@0.14. We don't use permissionless
+      # (Polymarket has its own Relayer, no ERC-4337), so the mismatch is inert.
+      - name: Install
+        run: npm ci --legacy-peer-deps
+
+      # Next 16 removed `next lint`, and `next build` no longer lints.
+      # Without this as its own step, linting silently never runs.
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # Hard gate: builder credentials reaching the browser would let anyone
+      # place attributed orders against the client's builder account.
+      - name: Credential leak guard
+        run: npm run check:secrets
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

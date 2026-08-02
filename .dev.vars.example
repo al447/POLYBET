@@ -1,0 +1,28 @@
+# Local development secrets. Copy to `.dev.vars` (gitignored) and fill in.
+#
+# In production these are set with `wrangler secret put <NAME>` — never
+# committed and never placed in wrangler.jsonc.
+#
+# All values are supplied by the client. See implementation.md section 1.
+# The app runs in "mock" mode with these blank: every screen renders and every
+# code path is exercised, but no order is signed or submitted.
+
+# P-1  Builder code, bytes32 hex, from polymarket.com -> Settings -> Builders
+POLYMARKET_BUILDER_CODE=
+
+# P-2..P-4  Builder API credentials. Secret and passphrase are shown ONCE.
+POLYMARKET_BUILDER_API_KEY=
+POLYMARKET_BUILDER_SECRET=
+POLYMARKET_BUILDER_PASSPHRASE=
+
+# OI-6  Fee rates in basis points. Caps: taker 100, maker 50. Users pay these
+# ON TOP of Polymarket's own fees.
+BUILDER_FEE_BPS_TAKER=0
+BUILDER_FEE_BPS_MAKER=0
+
+# P-6  Privy. The app id is public; the app secret is not.
+PRIVY_APP_SECRET=
+NEXT_PUBLIC_PRIVY_APP_ID=
+
+# P-9  Polygon RPC
+POLYGON_RPC_URL=

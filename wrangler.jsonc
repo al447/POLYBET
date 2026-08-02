@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "polymarket-integration-platform",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-03-25",
+  // nodejs_compat is what lets viem EIP-712 signing and node builtins work.
+  // global_fetch_strictly_public is required by OpenNext.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+
+  "assets": {
+    "binding": "ASSETS",
+    "directory": ".open-next/assets"
+  },
+
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "polymarket-integration-platform"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "NEXT_INC_CACHE_R2_BUCKET",
+      "bucket_name": "polymarket-platform-cache"
+    }
+  ],
+
+  "observability": { "enabled": true },
+
+  // NOTE: secrets are NEVER declared here. Set them with `wrangler secret put`.
+  // See implementation.md section 1 for the full list (P-1..P-9).
+  "vars": {
+    "NEXT_PUBLIC_CHAIN_ID": "137"
+  }
+}
