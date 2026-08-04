@@ -28,6 +28,19 @@ type ServerSession =
   | { state: "rejected"; reason: string };
 
 /**
+ * The `/api/auth/me` wire shape. Declared rather than inferred because
+ * `response.json()` is typed `Promise<unknown>` under the workerd runtime types
+ * (`cloudflare-env.d.ts`) — stricter, and more honest, than the DOM lib's `any`.
+ */
+type MeResponse =
+  | {
+      authenticated: true;
+      provider: string;
+      user: { userId: string; email: string | null; signerAddress: string };
+    }
+  | { authenticated: false; reason?: string };
+
+/**
  * Asks the server who it thinks we are. Free of setState so it can be called
  * from an effect: React requires state updates to happen in a callback rather
  * than synchronously in an effect body.
@@ -35,7 +48,7 @@ type ServerSession =
 async function loadServerSession(): Promise<ServerSession> {
   try {
     const response = await fetch("/api/auth/me", { cache: "no-store" });
-    const data = await response.json();
+    const data = (await response.json()) as MeResponse;
     return data.authenticated
       ? {
           state: "authenticated",

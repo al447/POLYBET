@@ -2,7 +2,11 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "polymarket-integration-platform",
   "main": ".open-next/worker.js",
-  "compatibility_date": "2025-03-25",
+  // Bumped 2026-08-04. OpenNext warns when this is >6 months old; the previous
+  // value (2025-03-25) was ~16 months stale. A compat date changes workerd
+  // behaviour, so it is bumped on its own and re-verified under `npm run
+  // preview` — never bundled with a deploy, or a break is unattributable.
+  "compatibility_date": "2026-08-01",
   // nodejs_compat is what lets viem EIP-712 signing and node builtins work.
   // global_fetch_strictly_public is required by OpenNext.
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],

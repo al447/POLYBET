@@ -2,7 +2,9 @@
 
 Working context for the Polymarket Integration Platform. **Keep this file current** — see [Maintenance Protocol](#maintenance-protocol) at the bottom.
 
-> **Last updated:** 2026-08-04 · **Phase:** Milestone 1 in progress · **Repo:** initialized, 2 commits
+> **Last updated:** 2026-08-04 · **Phase:** Milestone 1 in progress — deployment Phase 0 complete, **not yet deployed** · **Repo:** initialized, 5 commits
+>
+> **Deploy status:** blocked on client prerequisites — **P-7** (Cloudflare account + Workers Paid), **P-8** (domain), **P-9** (`POLYGON_RPC_URL`, still empty). Everything not requiring client access is done and verified on local workerd. See [deployment.md](deployment.md).
 
 ## Layout
 
@@ -24,6 +26,7 @@ scripts/
   check-client-bundle.mjs  CI leak guard
   provision-builder.mjs    P-1..P-5 provisioning + handover
   smoke-builder.mjs        Milestone 1 acceptance, run when P-1..P-5 land
+deployment.md              operational runbook — read before any deploy
 ```
 
 **Commands:** `npm run dev` · `lint` · `typecheck` · `test` · `build` · `check:secrets` · `preview` · `deploy` · `smoke:builder` · `builder:provision`
@@ -39,6 +42,7 @@ A white-label prediction market frontend on the client's own domain. It does **n
 | Doc | Role |
 |---|---|
 | [srs.md](srs.md) | Requirements — source of truth |
+| [deployment.md](deployment.md) | Operational runbook — deploys, secret rotation, rollback, troubleshooting, limits |
 | [implementation.md](implementation.md) | Step-by-step build plan, prerequisites, acceptance checks |
 | **CLAUDE.md** (this) | Working context — what's needed to act |
 
@@ -174,7 +178,11 @@ Stack is `patchedClearImmediate` → `CacheSignal.pendingTimeoutCleanup` → `tr
 
 **Workers cannot run the copy-trade daemon.** Request-scoped; no long-lived WebSocket, no unbounded loop. Needs Durable Objects + Cron Triggers, or a separate host (recommended). OI-3.
 
-**Signing on Workers — largely de-risked, still gated.** OpenNext gives the full Node.js runtime, so EIP-712 (`viem`) + HMAC-SHA256 should work normally. Still verify in a *deployed* Worker before building on it ([implementation.md](implementation.md) Step 1.6). Set `nodejs_compat` if a dependency needs it.
+**Signing on Workers — passes on local workerd, still gated on a deployed Worker.** OpenNext gives the full Node.js runtime, so EIP-712 (`viem`) + HMAC-SHA256 work normally. Set `nodejs_compat` if a dependency needs it.
+
+Measured 2026-08-04 under `opennextjs-cloudflare preview`: `/api/spike/signing` returns `passed: true` with `runtime: "workerd"` and all four checks green — EIP-712 via viem, HMAC-SHA256 via Web Crypto (RFC 4231 vector), the `@polymarket/client` signer, and a viem `WalletClient` in the shape Privy's embedded wallet exposes.
+
+⚠️ **This is not yet the Step 1.6 acceptance.** That gate specifies a *deployed* Worker, and `preview` is local workerd — same engine, different environment (no real edge networking, no production bindings). The local pass substantially de-risks the deploy but does not substitute for it. Re-run against the deployed host and record the result.
 
 **100 relay tx/day is shared across dev, QA, and demos.** Every Deposit Wallet deployment spends one. Call `getDeployed()` before deploying, reuse test wallets, don't burn deploys on throwaway accounts.
 
@@ -212,11 +220,19 @@ Stack is `patchedClearImmediate` → `CacheSignal.pendingTimeoutCleanup` → `tr
 
 Enable at **User management → Authentication → Advanced → "Return user data in an identity token"** (verified against docs.privy.io 2026-08-04). Until it is on, the symptom is a *client* session that looks fine — email and signer address render — while every server route reports `unauthorized`. `/api/auth/me` distinguishes this case explicitly as `missing_identity_token` rather than a bare 401.
 
-**Bundle is at 2.90 MiB gzipped with almost no UI.** The 3 MiB free-tier cap will be exceeded as soon as real screens land. Workers **Paid** is not optional (P-7). Watch this number.
+**🚩 Bundle is 4.79 MiB gzipped with almost no UI — up from 2.90 MiB.** Re-measured 2026-08-04 via `wrangler deploy --dry-run` (`22432.58 KiB / gzip: 4904.02 KiB`). It **already exceeds the 3 MiB free cap**, so Workers **Paid** is now proven mandatory rather than merely prudent (P-7). More importantly it is **~48% of the 10 MiB paid cap** with Milestone 1 only — no discovery UI, no order book, no charts, no portfolio. It grew 65% during Milestone 1 alone, which makes implementation.md's "Low probability" rating for exceeding the paid cap look optimistic. Treat the remaining headroom as a budget, not slack; re-measure every deploy (`deployment.md` §7.3).
 
 **Fonts are self-hosted — never reintroduce `next/font/google`.** It resolves over the network during `next build`, so every build, CI run and deploy depends on `fonts.googleapis.com`. That failed a build here on 2026-08-04 (`Failed to fetch Geist from Google Fonts`) on a transient blip, with nothing wrong in the code. The latin-subset variable woff2 files live in `src/app/fonts/` and are loaded with `next/font/local`; Geist is SIL OFL so redistribution is fine. Builds are now reproducible and offline-capable. Use `weight: "100 900"` — a single value collapses a variable font to one weight.
 
-**`tsc` caches aggressively.** After changing `tsconfig.json`, delete `*.tsbuildinfo` or you will debug errors that no longer exist.
+**`tsc` caches aggressively.** After changing `tsconfig.json`, delete `*.tsbuildinfo` or you will debug errors that no longer exist. The same applies to `.next/types/` — a stale `validator.ts` there references routes that no longer exist and fails typecheck with `Cannot find module '../../src/app/…/page.js'` for pages you never wrote. `rm -rf .next tsconfig.tsbuildinfo` and rebuild.
+
+**`npm run cf-typegen` changes global types and will surface new type errors.** `cloudflare-env.d.ts` is not just the `CloudflareEnv` interface — it is ~13k lines including the **full workerd runtime types**, and `tsconfig.json` picks it up via `**/*.ts`. Those types are stricter than the DOM lib: most notably `response.json()` becomes `Promise<unknown>` instead of `Promise<any>`, which broke 6 previously-compiling call sites on 2026-08-04.
+
+This is a **correctness win, not a nuisance** — the runtime really does return unknown-shaped data, and the DOM lib's `any` was hiding it. Fix by declaring the wire shape and casting (`(await response.json()) as MeResponse`), never by widening back to `any`. The file is gitignored and generated per-checkout, so a fresh clone hits this the first time someone runs the command.
+
+**Security headers live in `next.config.ts`'s `headers()`, and the CSP is currently REPORT-ONLY.** Added 2026-08-04, verified emitting under workerd. `CSP_ENFORCE = false` at the top of the file is the switch. Two things to know before flipping it:
+- `script-src` carries `'unsafe-inline'` because Next's hydration bootstrap is an inline script, so this CSP is **not meaningful XSS protection** yet. The real value today is `connect-src` (exfiltration), `frame-ancestors 'none'` (clickjacking a UI that signs orders), and `form-action`/`base-uri`. The upgrade is per-request nonces from `middleware.ts`, deferred because a nonce bug in the gate takes down every route.
+- The origin list is **derived**, not templated — from `lib/polymarket/config.ts`, Privy's dist bundle, and `browser-client.ts`. Re-derive when any of those change. Note `POLYGON_RPC_URL` deliberately does **not** appear: the browser reaches Polygon through Privy's EIP-1193 provider, and the RPC URL is a server-side secret that is not a browser origin.
 
 **`/api/geoblock` returns `country`/`region`, NOT `countryCode`/`regionCode`.** Live shape, verified 2026-08-04: `{"blocked":false,"ip":"…","country":"BD","region":"C"}`. Reading the `*Code` spelling yields `undefined`, falls through to `cf-ipcountry` (absent off Cloudflare), and lands on the fail-closed branch — so **unrestricted users get told they are close-only**. That failure mode looks like correct conservative behaviour from the outside, which is exactly why it went unnoticed. `lib/geo/edge.ts` now accepts both spellings, and `edge.test.ts` pins the live shape. The endpoint is undocumented with no stability guarantee — re-verify it each milestone.
 
@@ -335,6 +351,7 @@ Dates assume a 2026-08-03 start (unconfirmed, OI-7).
 | Code structure appears | Add a "Layout" section — key directories, entry points, commands |
 | A Polymarket API detail is verified or found stale | Update the integration section **and** the verification date in its heading |
 | A new trap or gotcha is hit | Add it to Traps — that section exists to stop the same mistake twice |
+| A **deploy** trap, limit, or recovery step is hit | Record it in [deployment.md](deployment.md) §8, not here. That file is the one someone reads at 2am; a deploy fix buried in this file will not be found in time |
 | A milestone completes | Mark it in the Milestones table |
 | A requirement changes | Update [srs.md](srs.md) first, then reflect the summary here |
 

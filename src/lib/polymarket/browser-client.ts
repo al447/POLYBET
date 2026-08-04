@@ -166,7 +166,7 @@ export async function preflightOrder(body: {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  const data = await response.json();
+  const data = (await response.json()) as PreflightResponse;
 
   if (!response.ok) {
     return {
@@ -177,3 +177,18 @@ export async function preflightOrder(body: {
   }
   return { allowed: true, feeBps: data.feeBps };
 }
+
+/**
+ * The `/api/orders` wire shape — both arms, since the error fields are what the
+ * failure path reads. Declared rather than inferred: `response.json()` is typed
+ * `Promise<unknown>` under the workerd runtime types (`cloudflare-env.d.ts`),
+ * which is stricter, and more honest, than the DOM lib's `any`.
+ */
+type PreflightResponse = {
+  ok?: boolean;
+  feeBps: { taker: number; maker: number };
+  side?: "BUY" | "SELL";
+  error?: string;
+  message?: string;
+  tier?: string;
+};
