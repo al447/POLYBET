@@ -1,28 +1,38 @@
 import { NextResponse } from "next/server";
 
-import { getAuthProvider, requireUser, UnauthorizedError } from "@/lib/auth/session";
-import { MissingBuilderCredentialsError } from "@/lib/polymarket/builder";
-import {
-  createUserClient,
-  isAccountCloseOnly,
-  placeMarketBuy,
-  placeMarketSell,
-} from "@/lib/polymarket/clob";
+import { requireUser, UnauthorizedError } from "@/lib/auth/session";
+import { describeBuilderConfig } from "@/lib/polymarket/builder";
 import { canOpenPositions } from "@/lib/geo/jurisdictions";
 import { serverEnv } from "@/lib/env";
 
 /**
- * Order placement (FR-3.5) — the security-critical route.
+ * Pre-trade authorization (FR-3.5, FR-6).
  *
- * Rules, in order:
- *  1. Authenticate.
- *  2. Re-check geo, both our tier and Polymarket's own closed-only flag. The
- *     proxy gate already ran, but a route that moves money does not trust an
- *     upstream header as its only control.
- *  3. Rebuild the order from primitives. The client sends tokenId/side/amount,
- *     never a constructed or signed order — accepting one would let a caller
- *     dictate price, size and counterparty.
- *  4. Attach the builder code and sign server-side.
+ * ⚠️ This route no longer places orders. Orders are built and signed **in the
+ * browser by the user's own wallet** — see `lib/polymarket/browser-client.ts`.
+ * Signing here would require the user to delegate their embedded wallet to us,
+ * granting standing authority to trade without per-order approval, which is
+ * precisely what this architecture refuses to hold.
+ *
+ * What survived that move, and why:
+ *  1. **Authentication** — an anonymous caller has no business getting a quote.
+ *  2. **Geo gate** — both our tier and, for the caller's benefit, a clear
+ *     reason. Advisory by construction: a determined user can sign and submit
+ *     to Polymarket directly. That was always true of a client-signed order,
+ *     and it is why this was never the only control — **Polymarket enforces
+ *     jurisdiction server-side regardless**. Ours exists so a restricted user
+ *     sees a real explanation instead of an opaque upstream rejection.
+ *  3. **Input validation** — catches malformed input before the user is asked
+ *     to sign something they cannot read.
+ *  4. **Fee disclosure** — the rate the user is about to pay, from server
+ *     config rather than anything the page could tamper with.
+ *
+ * SEC-2 ("orders rebuilt server-side, never accepted from the client") is
+ * narrowed rather than abandoned. Its purpose was to stop a caller dictating
+ * price, size and counterparty on someone else's behalf. With client-side
+ * signing that attack disappears by construction: an order is only valid if
+ * the user's own key signed it, so the worst a tampered page can do is harm
+ * the user operating it — never another account.
  */
 
 type OrderRequestBody = {
@@ -36,69 +46,60 @@ type OrderRequestBody = {
 
 export async function POST(request: Request) {
   try {
-    const user = await requireUser();
+    await requireUser();
 
     const geoTier = request.headers.get("x-geo-tier");
-    if (geoTier && !canOpenPositions(geoTier as never)) {
+    const body = (await request.json()) as OrderRequestBody;
+    const parsed = parseOrderRequest(body);
+
+    if ("error" in parsed) {
       return NextResponse.json(
-        { error: "close_only_region", tier: geoTier },
+        { error: "invalid_request", message: parsed.error },
+        { status: 400 },
+      );
+    }
+
+    // Selling is closing a position, which close-only jurisdictions permit.
+    if (
+      parsed.side === "BUY" &&
+      geoTier &&
+      !canOpenPositions(geoTier as never)
+    ) {
+      return NextResponse.json(
+        {
+          error: "close_only_region",
+          tier: geoTier,
+          message:
+            "You can close existing positions, but cannot open new ones from your location.",
+        },
         { status: 451 },
       );
     }
 
-    const body = (await request.json()) as OrderRequestBody;
-    const parsed = parseOrderRequest(body);
-    if ("error" in parsed) {
-      return NextResponse.json({ error: "invalid_request", message: parsed.error }, { status: 400 });
-    }
-
-    const provider = await getAuthProvider();
-    if (!provider) {
-      return NextResponse.json({ error: "auth_not_configured" }, { status: 503 });
-    }
-
     const env = await serverEnv();
-    const signer = await provider.createSigner(user);
-    const ctx = await createUserClient({ env, signer });
+    const builder = describeBuilderConfig(env);
 
-    // Upstream truth: the account itself may be restricted for reasons
-    // unrelated to request IP.
-    if (await isAccountCloseOnly(ctx)) {
-      if (parsed.side === "BUY") {
-        return NextResponse.json(
-          { error: "account_close_only" },
-          { status: 451 },
-        );
-      }
+    if (!builder.codeValid) {
+      return NextResponse.json(
+        {
+          error: "builder_not_configured",
+          message:
+            "Builder code is missing or malformed; orders would earn no attribution.",
+        },
+        { status: 503 },
+      );
     }
 
-    const result =
-      parsed.side === "BUY"
-        ? await placeMarketBuy(ctx, {
-            tokenId: parsed.tokenId,
-            amount: parsed.amount,
-            ...(parsed.maxSpend ? { maxSpend: parsed.maxSpend } : {}),
-            ...(parsed.limitPrice ? { maxPrice: parsed.limitPrice } : {}),
-          })
-        : await placeMarketSell(ctx, {
-            tokenId: parsed.tokenId,
-            shares: parsed.amount,
-            ...(parsed.limitPrice ? { minPrice: parsed.limitPrice } : {}),
-          });
-
-    return NextResponse.json({ ok: true, order: result });
+    return NextResponse.json(
+      { ok: true, feeBps: builder.feeBps, side: parsed.side },
+      { headers: { "cache-control": "no-store" } },
+    );
   } catch (error) {
     if (error instanceof UnauthorizedError) {
       return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
-    if (error instanceof MissingBuilderCredentialsError) {
-      return NextResponse.json(
-        { error: "builder_not_configured", message: error.message },
-        { status: 503 },
-      );
-    }
     return NextResponse.json(
-      { error: "order_failed", message: safeMessage(error) },
+      { error: "preflight_failed", message: safeMessage(error) },
       { status: 502 },
     );
   }
@@ -152,6 +153,7 @@ function asPositiveDecimal(value: unknown): string | undefined {
   return text;
 }
 
+/** Surfaces an error message without leaking keys or signatures (SEC-4). */
 function safeMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : "Unknown error";
   return message.replace(/0x[0-9a-fA-F]{40,}/g, "0x<redacted>");

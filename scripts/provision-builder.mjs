@@ -10,7 +10,8 @@
  *   P-2  builder API key     this script (`derive-keys`) or the same panel
  *   P-3  builder secret      ditto — shown ONCE by Polymarket
  *   P-4  builder passphrase  ditto — shown ONCE by Polymarket
- *   P-5  payout wallet       client-controlled address, set in the same panel
+ *   P-5  payout wallet       NOT separate — fees go to the profile-owner
+ *                            wallet itself. There is no recipient field.
  *
  * The `bytes32` builder code is assigned to a builder *profile*, and a profile
  * is created through the web UI. It is an input to this SDK, never an output:
@@ -185,9 +186,10 @@ function cmdNewWallet() {
   log("       written authorization, or have them click it on a screenshare.");
   log("  3. Settings → Builders → set up the builder profile");
   log(`  4. Fee rates: ${FEE_BPS.taker} bps taker, ${FEE_BPS.maker} bps maker`);
-  log("  5. Fee recipient: the CLIENT-CONTROLLED payout wallet (P-5) —");
-  log("     deliberately NOT this address, so revenue lands somewhere whose");
-  log("     key has never been in this environment.");
+  log("  5. ⚠ There is NO payout-wallet field. Commission is paid to THIS");
+  log("     address — the profile owner. It cannot be reassigned later, so");
+  log("     the profile must be registered on whichever key should own the");
+  log("     money permanently.");
   log("  6. Copy the bytes32 builder code into .dev.vars as");
   log("     POLYMARKET_BUILDER_CODE, plus key/secret/passphrase if shown.");
   log();
@@ -438,31 +440,41 @@ controls the builder profile and its fee configuration.
 | Builder code (P-1) | \`${env.POLYMARKET_BUILDER_CODE || "NOT YET REGISTERED"}\` |
 | Taker fee | ${env.BUILDER_FEE_BPS_TAKER ?? FEE_BPS.taker} bps (${(Number(env.BUILDER_FEE_BPS_TAKER ?? FEE_BPS.taker) / 100).toFixed(2)}%) |
 | Maker fee | ${env.BUILDER_FEE_BPS_MAKER ?? FEE_BPS.maker} bps |
-| Fee payout wallet (P-5) | your own wallet, set in Settings → Builders |
+| Commission is paid to | \`${ADDRESS}\` — the wallet above |
 
 The API key, secret, and passphrase are delivered separately through the
 password manager. They are not written here.
 
-## Please do these two things
+## Read this before you do anything else
 
-1. **Store the private key in your password manager**, then confirm receipt.
-2. **Check the fee payout wallet** at polymarket.com → Settings → Builders is
-   an address *you* control. Fee revenue goes wherever that points.
-
-## Disclosure you are entitled to have in writing
+**All commission revenue is paid to the wallet above.** Polymarket has no
+separate payout setting — fees go to whichever wallet owns the builder profile,
+and that cannot be reassigned afterwards.
 
 This wallet was generated on the developer's machine, so **the developer has
-seen this private key**. It was never printed to a terminal or sent over chat,
-and the local copy is deleted after your confirmation — but a private key
-cannot be rotated, only abandoned, and deletion on a modern SSD is not provable.
+seen its private key**. It was never printed to a terminal or sent over chat,
+and the local copy is deleted after your confirmation — but a private key cannot
+be rotated, only abandoned, and deletion on a modern SSD is not provable.
 
-Two things follow:
+So the key that controls your revenue has been seen by someone outside your
+organisation. You have two options:
 
-- Fee revenue was deliberately pointed at a **payout wallet you control and the
-  developer has never held keys to**, so the money does not sit behind this key.
-- If you want an owner key that no one else has ever seen, generate a new wallet
-  yourself and re-register the builder profile under it. That is the only
-  complete remedy, and it is worth doing once the platform is earning.
+1. **Accept it** — take custody now, store the key in your password manager, and
+   sweep earnings to your own treasury wallet regularly.
+2. **Re-register on a key only you have ever seen** — generate a wallet
+   yourself, set up a fresh builder profile under it, and we repoint the
+   platform at the new builder code.
+
+**Option 2 is dramatically cheaper right now than later.** Re-registering costs
+a new builder code and new API credentials, and forfeits attributed volume
+history — which is currently zero. Once real volume accrues, that history is
+what the Verified tier application rests on, and the cost of moving rises
+sharply.
+
+## Then
+
+1. **Store the private key in your password manager**, then confirm receipt.
+2. Tell us which option above you want.
 
 Do not reuse this wallet for personal funds.
 `;

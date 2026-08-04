@@ -28,7 +28,7 @@ Anything marked 🔴 is **blocked on the client** (a decision or a credential). 
 | P-2 | **Builder API Key** | Same panel | UUID | Week 1 D1 | Relayer, wallet deploy |
 | P-3 | **Builder Secret** | Same panel — **shown once** | base64 string | Week 1 D1 | L2 HMAC signing |
 | P-4 | **Builder Passphrase** | Same panel — **shown once** | string | Week 1 D1 | L2 HMAC signing |
-| P-5 | **Builder payout wallet** | Client's Polygon wallet | `0x…` address | Week 1 D1 | Fee accrual destination |
+| ~~P-5~~ | ~~Builder payout wallet~~ | ✅ **Resolved 2026-08-04** — not a separate wallet. Commission accrues to the profile-owner wallet `0xdd288d80…D0Ba`, accepted as-is. Handover transfers custody to the client | — | — | — |
 | P-6 | **Embedded wallet provider account** | Privy / Turnkey / Magic dashboard | App ID + App Secret | Week 1 D2 | Login (🔴 OI-4) |
 | P-7 | **Cloudflare account — Workers *Paid* plan** | Client's Cloudflare | Account ID + API token (Workers Scripts: Edit) | Week 1 D1 | Deploys. ⚠️ Paid required: free tier caps Workers at 3 MiB gzipped, which this app will exceed (10 MiB on paid) |
 | P-8 | **Production domain** | Client registrar | DNS delegated to Cloudflare | Week 3 | Launch, Verified application |
@@ -41,7 +41,7 @@ Anything marked 🔴 is **blocked on the client** (a decision or a credential). 
 >
 > P-2…P-4 *can* be minted programmatically once the profile exists, via `createBuilderApiKey()` — **not** `createApiKey()`, which returns *user* CLOB credentials. See `scripts/provision-builder.mjs`.
 
-> 💡 **The profile-owner wallet and the payout wallet do not have to be the same wallet.** Fees are distributed to the wallet designated as recipient in the Builders panel, which is set independently of the key that owns the profile. Point P-5 at an address the **client** controls exclusively — then whoever bootstrapped the profile has never held keys to the address the money lands in.
+> ⚠️ **P-5 is not a separate wallet — it IS the profile-owner wallet.** Verified 2026-08-04: the Builders panel has no payout field (its only address is marked *"For API use only"*), and the docs say only *"Collected builder fees are distributed to the wallet associated with your builder profile."* Whoever holds that key controls all commission revenue, and it cannot be reassigned. **Register the builder profile on the key that should ultimately own the money** — migrating afterwards costs a new builder code, new API credentials, and the attributed volume history the Verified tier application rests on.
 
 ### 1.2 Handover Rules
 

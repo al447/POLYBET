@@ -140,7 +140,11 @@ Taker cap **100 bps**, maker cap **50 bps**, 1 bps granularity. `fee = notional 
 
 **The builder code is UI-only; the API credentials are not.** P-1 is assigned to a builder *profile* created at `polymarket.com` → Settings → Builders, and in the SDK it is only ever an **input** (`builderCode?: BuilderCode`) — nothing returns one. P-2…P-4 *can* be minted in code once the profile exists, with **`createBuilderApiKey()`** (`/actions`) → `BuilderApiKeyCreds {key, secret, passphrase}`. **`createApiKey()` is a different function** returning *user* CLOB creds (`ApiKeyCreds`); using it for builder setup yields credentials that attribute nothing. `scripts/provision-builder.mjs` covers the whole sequence.
 
-**Fee payouts follow the profile's designated recipient wallet, which is set independently of the key that owns the profile.** Pointing P-5 at a client-controlled address means whoever bootstrapped the profile never holds keys to where the revenue lands.
+**🚩 There is NO configurable payout wallet. Fees go to the wallet that owns the builder profile.** Verified in the Builders panel and against docs 2026-08-04 — the only address field there is labelled *"Do not send funds to this address. For API use only."* The docs state exactly one thing: *"Collected builder fees are distributed to the wallet associated with your builder profile."*
+
+**Consequence:** whoever holds the profile-owner key controls all commission revenue. There is no way to separate "who registered the profile" from "who gets paid", so a profile registered on a developer-generated key routes the client's revenue through a key the developer has seen. **Migrating later is expensive** — a new profile means a new `bytes32` code, new API keys, and forfeiting the attributed volume history that the Verified tier application depends on. Register on the key that should ultimately own the money, from the start.
+
+*(An earlier version of this file claimed the recipient was configurable. It is not — that was inferred from a doc summary, not verified.)*
 
 ### Builder tiers
 
@@ -156,7 +160,11 @@ Taker cap **100 bps**, maker cap **50 bps**, 1 bps granularity. `fee = notional 
 
 ## Traps
 
-**🚩 `cacheComponents: true` breaks every page under workerd — deploy blocker, unresolved.** Verified locally 2026-08-04 on `@opennextjs/cloudflare@1.20.2` (latest published). API routes are fine; both PPR pages (`/`, `/restricted`) return **500** with:
+**✅ RESOLVED 2026-08-04 — `cacheComponents: false` + `experimental.useCache: true`.** Pages serve 200 under workerd, and `use cache` / `cacheLife` / `cacheTag` stay available for Milestone 2. `useCache` is a **separate experimental flag** from `cacheComponents`, which is what makes this a real third option rather than a compromise.
+
+Measured cost of dropping Cache Components: `/` and `/restricted` go from `◐ Partial Prerender` to `ƒ Dynamic`, and **nothing becomes static**. Every page reads `cookies()` (auth) and `headers()` (geo), so Next marks them fully dynamic anyway. We lose a streaming static shell, not correctness — a stale price is still impossible by default. Do not "restore" `cacheComponents: true` without re-testing under `wrangler dev`; the failure does not reproduce under `next dev`.
+
+**The original problem, for context.** Verified 2026-08-04 on `@opennextjs/cloudflare@1.20.2` (latest published; no canary, no config toggle). API routes are fine; both PPR pages (`/`, `/restricted`) return **500** with:
 
 > `Cannot perform I/O on behalf of a different request. I/O objects ... created in the context of one request handler cannot be accessed from a different request's handler.`
 
@@ -206,6 +214,8 @@ Enable at **User management → Authentication → Advanced → "Return user dat
 
 **Bundle is at 2.90 MiB gzipped with almost no UI.** The 3 MiB free-tier cap will be exceeded as soon as real screens land. Workers **Paid** is not optional (P-7). Watch this number.
 
+**Fonts are self-hosted — never reintroduce `next/font/google`.** It resolves over the network during `next build`, so every build, CI run and deploy depends on `fonts.googleapis.com`. That failed a build here on 2026-08-04 (`Failed to fetch Geist from Google Fonts`) on a transient blip, with nothing wrong in the code. The latin-subset variable woff2 files live in `src/app/fonts/` and are loaded with `next/font/local`; Geist is SIL OFL so redistribution is fine. Builds are now reproducible and offline-capable. Use `weight: "100 900"` — a single value collapses a variable font to one weight.
+
 **`tsc` caches aggressively.** After changing `tsconfig.json`, delete `*.tsbuildinfo` or you will debug errors that no longer exist.
 
 **`/api/geoblock` returns `country`/`region`, NOT `countryCode`/`regionCode`.** Live shape, verified 2026-08-04: `{"blocked":false,"ip":"…","country":"BD","region":"C"}`. Reading the `*Code` spelling yields `undefined`, falls through to `cf-ipcountry` (absent off Cloudflare), and lands on the fail-closed branch — so **unrestricted users get told they are close-only**. That failure mode looks like correct conservative behaviour from the outside, which is exactly why it went unnoticed. `lib/geo/edge.ts` now accepts both spellings, and `edge.test.ts` pins the live shape. The endpoint is undocumented with no stability guarantee — re-verify it each milestone.
@@ -229,7 +239,15 @@ That message names the two missing things exactly. Verified against docs.privy.i
 
 Diagnosis note: a local `privateKey()` signer succeeds on the identical code path (`isWalletDeployed: true`, balance reads fine), so this is **not** a builder-credential or SDK-wiring problem. Only the Privy remote-signer path fails.
 
-**✅ RESOLVED 2026-08-04 — client-side signing chosen.** The user's browser signs with their own Privy wallet; we never request delegation and never hold signing authority. Builder authorization is fetched per request from **`/api/builder/sign`** using the SDK's `remoteBuilderSigning({ url })`, so the builder **secret stays server-side** while the client runs in the browser. Foundation is in place: the sign route, `lib/polymarket/browser-client.ts`, `NEXT_PUBLIC_POLYMARKET_BUILDER_CODE`, and Deposit Wallet deployment. **Order placement is still on the old server-side path and must be migrated.**
+**✅ RESOLVED 2026-08-04 — client-side signing chosen.** The user's browser signs with their own Privy wallet; we never request delegation and never hold signing authority. Builder authorization is fetched per request from **`/api/builder/sign`** using the SDK's `remoteBuilderSigning({ url })`, so the builder **secret stays server-side** while the client runs in the browser. **Verified working end-to-end 2026-08-04**: user signs in-browser → `/api/builder/sign` supplies builder auth → Relayer deploys the Deposit Wallet → balance reads. The panel makes no server wallet calls at all; the QR is rendered client-side.
+
+Gotcha inside this: the viem wallet client **must** be built with `account` set. `signerFrom` asserts `invariant(client.account !== undefined, "Wallet client with account is required")`, but viem allows an account-less client for read paths — so omitting it compiles and only fails at signing.
+
+**Orders migrated 2026-08-04.** Signing lives in `browser-client.ts` (`placeMarketBuy` / `placeMarketSell`, builder code inside the signed struct). **`/api/orders` no longer places orders** — it is now pre-trade authorization: auth, geo gate, input validation, fee disclosure. Call it before signing.
+
+**SEC-2 is narrowed, not abandoned.** Its purpose was stopping a caller dictating price/size/counterparty *on someone else's behalf*. Client-side signing removes that attack by construction — an order is only valid if the user's own key signed it, so a tampered page can only harm the user operating it. The geo gate is likewise advisory now (a user can submit to Polymarket directly), which is fine because it never was the only control: **Polymarket enforces jurisdiction upstream regardless**; ours exists to give real feedback instead of an opaque rejection.
+
+**Dead code awaiting removal:** `/api/wallet/{status,deploy,qr}` and all of `lib/polymarket/clob.ts`. Nothing in the UI calls them and they fail on the abandoned server-signer path. They are inert (auth-gated, then error), not a hole — but delete them rather than let someone wire them back up.
 
 Two consequences to keep straight:
 - **SEC-2 is narrowed, not deleted.** Orders are no longer rebuilt server-side. What protects us is that `builderCode` is inside the *signed* order struct — a tampered order is attributed elsewhere, not a way to move someone else's funds. Nothing the browser constructs can spend funds the user's own signer did not authorise.
