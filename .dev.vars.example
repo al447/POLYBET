@@ -8,6 +8,14 @@
 # code path is exercised, but no order is signed or submitted.
 
 # P-1  Builder code, bytes32 hex, from polymarket.com -> Settings -> Builders
+#
+# Needed in BOTH places, because orders are signed in the browser:
+#   here                -> server-side reads (health, diagnostics)
+#   .env.local          -> NEXT_PUBLIC_POLYMARKET_BUILDER_CODE, same value
+#
+# Safe in the client bundle, unlike the credentials below: the code is written
+# into the signed order struct and emitted in the on-chain OrderFilled event,
+# so it is already public.
 POLYMARKET_BUILDER_CODE=
 
 # P-2..P-4  Builder API credentials. Secret and passphrase are shown ONCE.
@@ -20,9 +28,23 @@ POLYMARKET_BUILDER_PASSPHRASE=
 BUILDER_FEE_BPS_TAKER=0
 BUILDER_FEE_BPS_MAKER=0
 
-# P-6  Privy. The app id is public; the app secret is not.
+# P-6  Privy app secret. Server-side only, read at request time.
 PRIVY_APP_SECRET=
-NEXT_PUBLIC_PRIVY_APP_ID=
+
+# NEXT_PUBLIC_PRIVY_APP_ID does NOT belong here.
+#
+# Next inlines NEXT_PUBLIC_* into the bundle at BUILD time, and it reads only
+# real environment variables / .env files at that point — never .dev.vars or
+# wrangler.jsonc `vars`, both of which are resolved at request time. Verified
+# empirically 2026-08-04: setting it here leaves the client bundle with an
+# empty app id, so `isAuthConfigured` is false, <PrivyProvider> never mounts,
+# and login silently cannot work.
+#
+#   local  -> .env.local  (gitignored)
+#   CI     -> a build-step environment variable, before `opennextjs-cloudflare build`
+#
+# `wrangler secret put NEXT_PUBLIC_PRIVY_APP_ID` is always too late — the
+# bundle is already built.
 
 # P-9  Polygon RPC
 POLYGON_RPC_URL=

@@ -1,5 +1,7 @@
 import "server-only";
 
+import { connection } from "next/server";
+
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 /**
@@ -40,6 +42,14 @@ const SECRET_KEYS = [
  */
 export async function serverEnv(): Promise<ServerEnv> {
   try {
+    // Cache Components: `getCloudflareContext` reads the clock internally, and
+    // Next 16 rejects that during prerender until request data has been read —
+    // "used `new Date()` before accessing ... Request data". A <Suspense>
+    // boundary does NOT satisfy it. `connection()` marks the scope dynamic,
+    // which is correct regardless: nothing that reads secrets may prerender.
+    // Outside a request (vitest, scripts) it throws into the fallback below.
+    await connection();
+
     const { env } = await getCloudflareContext({ async: true });
     return env as unknown as ServerEnv;
   } catch {

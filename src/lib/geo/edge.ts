@@ -17,12 +17,28 @@ export type GeoStatus = {
   degraded: boolean;
 };
 
+/**
+ * Shape of `GET https://polymarket.com/api/geoblock`.
+ *
+ * The live response uses `country` and `region`:
+ *   `{"blocked":false,"ip":"1.2.3.4","country":"BD","region":"C"}`
+ *
+ * The `*Code` aliases are tolerated because this endpoint is undocumented and
+ * has no stability guarantee — reading only one spelling is how the country
+ * silently became `undefined` and every caller fell through to the fail-closed
+ * branch, which presents as "close-only" for users who are not restricted.
+ */
 type UpstreamGeoblock = {
   blocked?: boolean;
+  country?: string;
+  region?: string;
   countryCode?: string;
   regionCode?: string;
   ip?: string;
 };
+
+const upstreamCountry = (u: UpstreamGeoblock) => u.country ?? u.countryCode;
+const upstreamRegion = (u: UpstreamGeoblock) => u.region ?? u.regionCode;
 
 const UPSTREAM_TIMEOUT_MS = 2_500;
 
@@ -56,8 +72,8 @@ export async function resolveGeoStatus(request: Request): Promise<GeoStatus> {
     };
   }
 
-  const countryCode = upstream.countryCode ?? headerCountry;
-  const regionCode = upstream.regionCode ?? headerRegion;
+  const countryCode = upstreamCountry(upstream) ?? headerCountry;
+  const regionCode = upstreamRegion(upstream) ?? headerRegion;
 
   return {
     tier: resolveGeoTier({
@@ -67,7 +83,10 @@ export async function resolveGeoStatus(request: Request): Promise<GeoStatus> {
     }),
     countryCode: countryCode ?? null,
     regionCode: regionCode ?? null,
-    degraded: false,
+    // A response we could not extract a country from is not a healthy check,
+    // even though the request itself succeeded — the tier below it is the
+    // fail-closed default rather than a real determination.
+    degraded: !countryCode,
   };
 }
 

@@ -37,6 +37,12 @@ Anything marked 🔴 is **blocked on the client** (a decision or a credential). 
 | P-11 | **AI provider key** (Phase 2) | Anthropic / OpenAI | API key | Phase 2 | Predict AI (🔴 OI-2) |
 | P-12 | **Error tracking** (optional) | Sentry | DSN | Week 2 | Observability |
 
+> ⚠️ **P-1 cannot be generated programmatically.** The `bytes32` builder code is assigned to a builder *profile*, and profiles are created only through `polymarket.com` → Settings → Builders. In the SDK it is exclusively an **input** — every builder function takes `builderCode?: BuilderCode`; none returns one. A script that "generates builder keys" without a registered profile produces credentials that attribute nothing and earn nothing.
+>
+> P-2…P-4 *can* be minted programmatically once the profile exists, via `createBuilderApiKey()` — **not** `createApiKey()`, which returns *user* CLOB credentials. See `scripts/provision-builder.mjs`.
+
+> 💡 **The profile-owner wallet and the payout wallet do not have to be the same wallet.** Fees are distributed to the wallet designated as recipient in the Builders panel, which is set independently of the key that owns the profile. Point P-5 at an address the **client** controls exclusively — then whoever bootstrapped the profile has never held keys to the address the money lands in.
+
 ### 1.2 Handover Rules
 
 - Deliver secrets through a **password manager share or Cloudflare dashboard entry** — never Slack, email, or a chat message. P-3 and P-4 are displayed once by Polymarket; if lost, credentials must be rotated.
@@ -48,7 +54,7 @@ Anything marked 🔴 is **blocked on the client** (a decision or a credential). 
 1. Create the builder profile at `polymarket.com/settings` → Builders tab → record P-1…P-5.
 2. Fund the builder wallet with a small amount of pUSD (~$50) for end-to-end testing on mainnet. **There is no testnet for the production CLOB** — Milestone 1 acceptance requires a real order.
 3. Decide the wallet provider (OI-4) and create that account (P-6).
-4. Decide the builder fee rate (OI-6) — capped at 100 bps taker / 50 bps maker.
+4. ~~Decide the builder fee rate (OI-6)~~ — ✅ **resolved 2026-08-04: 50 bps taker (0.50%), 0 bps maker.** Within the 100/50 caps. Set on the builder profile at registration *and* in `BUILDER_FEE_BPS_*`; `npm run builder:provision -- verify-fees` asserts the two agree, because a mismatch means every fee disclosed to a user is wrong.
 5. Confirm the target market against the close-only geoblock list (OI-1).
 
 ---

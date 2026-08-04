@@ -8,7 +8,12 @@ import {
 // Standalone actions live on the /actions subpath rather than the root export.
 import { deployDepositWallet, isWalletDeployed } from "@polymarket/client/actions";
 
-import { resolveBuilderConfig, type BuilderConfig } from "./builder";
+// `builderApiKey` lives on the /node subpath but pulls in no node: builtins,
+// so it runs on workerd unchanged.
+import { builderApiKey } from "@polymarket/client/node";
+
+import { resolveBuilderAuth, resolveBuilderConfig, type BuilderConfig } from "./builder";
+import { COLLATERAL } from "./config";
 import type { ServerEnv } from "@/lib/env";
 
 /**
@@ -44,10 +49,19 @@ export async function createUserClient(params: {
   wallet?: string;
 }): Promise<ClientContext> {
   const builder = resolveBuilderConfig(params.env);
+
   const client = await createSecureClient({
     signer: params.signer,
+    // Required, not optional. Omitting `wallet` (which is what we want — the
+    // user's deterministic Deposit Wallet becomes the account) makes the SDK
+    // deploy that wallet during setup, and deployment goes through the Relayer.
+    // With no authorization the client throws `InvariantError: Deposit Wallet
+    // deployment requires a Relayer API Key or Builder API Key in the client
+    // configuration`, which surfaces to the UI as `wallet_status_failed`.
+    apiKey: builderApiKey(resolveBuilderAuth(params.env)),
     ...(params.wallet ? { wallet: params.wallet } : {}),
   });
+
   return { client, builder };
 }
 
@@ -103,6 +117,72 @@ async function resolveAccountAddress(client: PolymarketClient): Promise<string> 
     wallet?: string;
   };
   return candidate.account?.address ?? candidate.wallet ?? "";
+}
+
+/**
+ * Reads the Deposit Wallet state without deploying it (FR-1.2, FR-1.4).
+ *
+ * Strictly read-only, unlike `ensureDepositWallet`. The wallet panel polls this
+ * while a user waits for a deposit to land, and a poll that could deploy would
+ * drain the 100/day relay budget in minutes.
+ */
+export async function readWalletStatus(ctx: ClientContext): Promise<{
+  address: string;
+  deployed: boolean;
+  balance: CollateralBalance | null;
+}> {
+  const address = await resolveAccountAddress(ctx.client);
+  const deployed = await isWalletDeployed(ctx.client);
+
+  // An undeployed wallet has no CLOB-side balance to read; asking for one is a
+  // guaranteed error rather than a zero.
+  const balance = deployed ? await fetchCollateralBalance(ctx) : null;
+
+  return { address, deployed, balance };
+}
+
+export type CollateralBalance = {
+  /** Base units — pUSD has 6 decimals. */
+  raw: string;
+  /** Human-readable, e.g. "12.50". */
+  formatted: string;
+  symbol: string;
+};
+
+/**
+ * The user's pUSD collateral balance.
+ *
+ * Collateral is pUSD, not USDC: deposits arrive as USDC and auto-convert on
+ * arrival. Every balance, fee and PnL figure in the app is pUSD.
+ */
+export async function fetchCollateralBalance(
+  ctx: ClientContext,
+): Promise<CollateralBalance> {
+  // Another one on the /actions subpath: unlike `placeMarketOrder`, balance is
+  // NOT a client instance method. Check `dist/actions/index.d.ts` before
+  // assuming which side of that split a call falls on.
+  const { fetchBalanceAllowance } = await import("@polymarket/client/actions");
+  const { AssetType } = await import("@polymarket/bindings/clob");
+
+  const result = await fetchBalanceAllowance(ctx.client, {
+    assetType: AssetType.COLLATERAL,
+  });
+
+  const raw = BigInt(result.balance ?? 0n);
+  return {
+    raw: raw.toString(),
+    formatted: formatUnits(raw, COLLATERAL.decimals),
+    symbol: COLLATERAL.symbol,
+  };
+}
+
+/** Base units to a fixed-2 decimal string. Avoids float entirely. */
+function formatUnits(value: bigint, decimals: number): string {
+  const divisor = 10n ** BigInt(decimals);
+  const whole = value / divisor;
+  const fraction = value % divisor;
+  const padded = fraction.toString().padStart(decimals, "0").slice(0, 2);
+  return `${whole}.${padded}`;
 }
 
 /* -------------------------------------------------------------------------- */

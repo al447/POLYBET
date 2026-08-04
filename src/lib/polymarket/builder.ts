@@ -55,6 +55,38 @@ export function resolveBuilderConfig(env: ServerEnv): BuilderConfig {
   };
 }
 
+/** L2 builder credentials (P-2…P-4). Distinct from the builder code (P-1). */
+export type BuilderAuth = {
+  key: string;
+  secret: string;
+  passphrase: string;
+};
+
+/**
+ * Builder API credentials for SDK request authorization.
+ *
+ * Separate from `resolveBuilderConfig` because these answer different
+ * questions: the builder *code* is attribution and rides inside the signed
+ * order, while these credentials authenticate our infrastructure requests to
+ * the Relayer and CLOB.
+ *
+ * Required for anything that touches the Relayer — Deposit Wallet deployment
+ * in particular. Without them `createSecureClient` fails with
+ * `InvariantError: Deposit Wallet deployment requires a Relayer API Key or
+ * Builder API Key in the client configuration`.
+ *
+ * @throws {MissingBuilderCredentialsError} when any of the three is absent.
+ */
+export function resolveBuilderAuth(env: ServerEnv): BuilderAuth {
+  const key = env.POLYMARKET_BUILDER_API_KEY;
+  const secret = env.POLYMARKET_BUILDER_SECRET;
+  const passphrase = env.POLYMARKET_BUILDER_PASSPHRASE;
+
+  if (!key || !secret || !passphrase) throw new MissingBuilderCredentialsError();
+
+  return { key, secret, passphrase };
+}
+
 /**
  * Validates configured fee rates without throwing, for health/diagnostics.
  */
