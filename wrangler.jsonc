@@ -30,7 +30,15 @@
 
   // NOTE: secrets are NEVER declared here. Set them with `wrangler secret put`.
   // See implementation.md section 1 for the full list (P-1..P-9).
+  //
+  // Fee rates live here rather than in a secret on purpose: they are not
+  // sensitive, and version-controlling them means a rate change is a reviewable
+  // commit rather than an invisible dashboard edit. They MUST match the rates
+  // registered on the Polymarket builder profile — a mismatch means every fee
+  // disclosed to a user is wrong. `builder:provision -- verify-fees` asserts it.
   "vars": {
-    "NEXT_PUBLIC_CHAIN_ID": "137"
+    "NEXT_PUBLIC_CHAIN_ID": "137",
+    "BUILDER_FEE_BPS_TAKER": "50",
+    "BUILDER_FEE_BPS_MAKER": "0"
   }
 }
