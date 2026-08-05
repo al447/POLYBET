@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import localFont from "next/font/local";
 
 import { Providers } from "./providers";
+import { NavBar } from "@/components/layout/nav-bar";
 import "./globals.css";
 
 /**
@@ -52,7 +53,10 @@ export default function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col bg-zinc-950 text-zinc-100">
-        <Providers>{children}</Providers>
+        <Providers>
+          <NavBar />
+          {children}
+        </Providers>
       </body>
     </html>
   );
