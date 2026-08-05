@@ -50,3 +50,9 @@ cloudflare-env.d.ts
 .dev.vars
 .dev.vars.*
 !.dev.vars.example
+
+# Cloudflare deploy credentials (P-7). Covered by .env* above, but listed
+# explicitly: this holds an API token with Workers deploy rights, and it must
+# not depend on a wildcard someone later adds an exception to.
+.env.cloudflare
+!.env.cloudflare.example

@@ -2,9 +2,14 @@
 
 Working context for the Polymarket Integration Platform. **Keep this file current** — see [Maintenance Protocol](#maintenance-protocol) at the bottom.
 
-> **Last updated:** 2026-08-04 · **Phase:** Milestone 1 in progress — deployment Phase 0 complete, **not yet deployed** · **Repo:** initialized, 5 commits
+> **Last updated:** 2026-08-05 · **Phase:** Milestone 1 in progress — deployment Phase 0 complete, **not yet deployed** · **Repo:** initialized, 5 commits
 >
-> **Deploy status:** blocked on client prerequisites — **P-7** (Cloudflare account + Workers Paid), **P-8** (domain), **P-9** (`POLYGON_RPC_URL`, still empty). Everything not requiring client access is done and verified on local workerd. See [deployment.md](deployment.md).
+> **Deploy status:** first deploy **attempted and rejected 2026-08-05** — the client's Cloudflare account is on **Workers Free** and the upload failed with `exceeded the size limit of 3 MiB [code: 10027]`. **Corrected 2026-08-05:** the account is not literally empty — an empty `polymarket-integration-platform` Worker *service* shell exists in the dashboard (name reserved, no code, no bindings, no versions, 0 invocations), visible at Workers & Pages but absent from the `GET /workers/scripts` API and `wrangler deployments list`. This is expected and harmless — see [deployment.md §2.1](deployment.md#21-authenticate).
+>
+> - **P-7** — *half done.* Account authenticated (`Polybet365@gmail.com's Account`, token in `.env.cloudflare`), R2 bucket `polymarket-platform-cache` created. **Blocked on the client upgrading to Workers Paid ($5/mo).**
+> - **P-8** (domain) and **P-9** (`POLYGON_RPC_URL`, still empty) — unchanged.
+>
+> Everything not requiring client access is done and verified on local workerd. See [deployment.md](deployment.md).
 
 ## Layout
 
@@ -31,7 +36,7 @@ deployment.md              operational runbook — read before any deploy
 
 **Commands:** `npm run dev` · `lint` · `typecheck` · `test` · `build` · `check:secrets` · `preview` · `deploy` · `smoke:builder` · `builder:provision`
 
-**Mock mode.** With no builder credentials set, the app builds and every path runs, but no order is signed. `/api/health` reports `mode` and which of P-1…P-9 are missing.
+**Mock mode.** With no builder credentials set, the app builds and every path runs, but no order is signed. `/api/health` reports `mode` plus presence of the **five** keys in `SECRET_KEYS` (`lib/env.ts`) — the four `POLYMARKET_BUILDER_*` and `PRIVY_APP_SECRET`. It does **not** cover all of P-1…P-9: `POLYGON_RPC_URL` (P-9) is absent from that list, so an empty RPC URL is invisible to the probe and `problems: []` does not mean fully provisioned. Track P-9 by hand.
 
 ---
 
@@ -213,6 +218,10 @@ Measured 2026-08-04 under `opennextjs-cloudflare preview`: `/api/spike/signing` 
 **Cache Components forbids the clock before request data — `serverEnv()` calls `await connection()` first.** `getCloudflareContext()` reads the clock internally, so any Server Component touching it dies at build with ``Route "/" used `new Date()` before accessing ... Request data``. **A `<Suspense>` boundary does not satisfy this** — different rule from the uncached-data one below, same symptom of a failing build. `connection()` marks the scope dynamic, which is correct anyway: nothing that reads secrets may ever prerender.
 
 **🚩 `NEXT_PUBLIC_PRIVY_APP_ID` must be a BUILD-time variable — `.dev.vars` does not work.** Verified empirically 2026-08-04 with sentinel values: Next inlines `NEXT_PUBLIC_*` into the bundle at build, reading only real env vars and `.env*` files. **Neither `.dev.vars` nor `wrangler.jsonc` `vars` reach it** — both are request-time. Put it in `.env.local` locally and in a CI build-step env var for deploys; `wrangler secret put` is always too late, the bundle is already built. The failure is silent and total: the app id inlines as `""`, `isAuthConfigured` is false, `<PrivyProvider>` never mounts, and login is simply absent with no error. Contrast `PRIVY_APP_SECRET`, which is server-side and *does* belong in `.dev.vars`.
+
+**…and `NEXT_PUBLIC_POLYMARKET_BUILDER_CODE` has the same trap with no way to detect it yet.** Verified 2026-08-05 by grepping the built bundle: the Privy app id inlines into a client chunk, but the builder code appears **nowhere** — not in `assets`, not in the server bundle, not in `worker.js`. That is currently *correct*, not a bug: nothing in the shipped UI calls `placeMarketBuy`/`placeMarketSell` (0 chunk matches), so `builderCode()` is tree-shaken, and the sole surviving reader — `isTradingConfigured` in `lib/auth/public-config.ts` — constant-folds to a boolean without needing the literal. Every `builderCode` string in the bundle is `@polymarket/client`'s own zod schemas.
+
+The consequence is the dangerous part: **you cannot verify this variable inlined by inspecting the bundle**, and it goes load-bearing the moment order UI ships in Milestone 3. A CI build that forgets to export it will produce a bundle that looks identical to a correct one and silently attributes every order to nobody — losing revenue with no error anywhere. Add a bundle assertion for the code literal *in the same PR* as the first order-placing component, not after.
 
 **A wrong Privy app id fails the build, not the request.** With a non-empty but invalid id, prerender dies with `Error: Cannot initialize the Privy provider with an invalid Privy app ID` on `/_not-found`. Fail-fast, but it means a typo presents as a build error far from its cause.
 

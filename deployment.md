@@ -2,7 +2,7 @@
 
 Operational guide for the Polymarket Integration Platform on Cloudflare Workers.
 
-> **Last updated:** 2026-08-04 · **Target:** Cloudflare Workers via `@opennextjs/cloudflare` · **Status:** Phase 0 complete, not yet deployed
+> **Last updated:** 2026-08-05 · **Target:** Cloudflare Workers via `@opennextjs/cloudflare` · **Status:** account authenticated + R2 bucket created; **first deploy rejected — client account is on Workers Free** (§2.1)
 
 **Scope.** [implementation.md](implementation.md) is the one-time build plan; [CLAUDE.md](CLAUDE.md) is working context. **This file is what you open to ship a change, rotate a credential, or work out why production is broken.** If a deploy sends you back to either of the others, that is a gap here — fix it here, while the friction is fresh.
 
@@ -65,15 +65,20 @@ Once per Cloudflare account. Skip to §3 for routine deploys.
 
 Prefer a scoped API token over `wrangler login` — it is the same mechanism CI uses, so this validates the real path:
 
+Credentials live in **`.env.cloudflare`** (gitignored, `chmod 600` — template at `.env.cloudflare.example`), sourced per command so the token never lands in shell history:
+
 ```bash
-export CLOUDFLARE_API_TOKEN="<token>"
-export CLOUDFLARE_ACCOUNT_ID="<account id>"
+set -a && . ./.env.cloudflare && set +a
 npx wrangler whoami        # confirm before proceeding
 ```
 
-Token permissions: **Workers Scripts: Edit**, **Workers R2 Storage: Edit**, **Account Settings: Read**, and **Zone: DNS: Edit** for the custom domain.
+Token permissions: **Workers Scripts: Edit**, **Workers R2 Storage: Edit**, **Account Settings: Read**, and **Zone: DNS: Edit** + **Zone: Workers Routes: Edit** for the custom domain (add the zone scopes only once P-8 lands — there is no zone to scope to before that).
 
-⚠️ **Confirm the Workers Paid plan is active.** At 4.79 MiB gzipped this is not optional — a free account rejects the upload with a size error.
+⚠️ **Check which account `whoami` prints.** A token minted with *All accounts* rather than a single account will list several, and `CLOUDFLARE_ACCOUNT_ID` is then the only thing pinning deploys to the right one. Any command run without sourcing `.env.cloudflare` makes wrangler pick or prompt. Verified 2026-08-05: the client account is **`Polybet365@gmail.com's Account`** (`bba4558448a9e49d3826ea947daa5869`); a personal account also being visible to the token is the failure mode to watch for.
+
+⚠️ **Confirm the Workers Paid plan is active — this is a hard gate, verified the hard way.** At 4.79 MiB gzipped a free account rejects the upload outright. **Observed 2026-08-05 on the client's account:** deploy failed with `exceeded the size limit of 3 MiB … [code: 10027]`. The plan page is `dash.cloudflare.com/<account-id>/workers/plans`.
+
+**Correction, 2026-08-05:** "account left clean" understated it slightly. The failed deploy left an **empty Worker service shell** named `polymarket-integration-platform` — visible in the dashboard at `workers/services/view/polymarket-integration-platform/production` with "No URLs enabled," 0 domains, 0 bindings, 0 versions, 0 invocations. Cloudflare's newer dashboard appears to create the *service* (name + `production` environment slot) as one step and upload the actual code bundle as a separate step; the 3 MiB validation killed the second step, so the name got reserved but no code ever landed. This shell does **not** show up in `wrangler deployments list --name polymarket-integration-platform` (empty output, exit 0) or `GET /accounts/:id/workers/scripts` (`"result": []`) — both only report scripts with actual deployed code. Confirmed live 2026-08-05: nothing is running, nothing is billed, 0 invocations. No action needed — do **not** delete it or create a new Worker from the dashboard. It's the correct deploy target already; `npm run deploy` will populate it once Paid is active.
 
 ### 2.2 Create the R2 bucket
 
@@ -189,7 +194,7 @@ Run in order against the deployed host. Stop at the first failure.
 | 1 | `GET /api/spike/signing` | `passed: true` **and** `runtime.runtime: "workerd"`. 🔴 If this fails, **stop and escalate** — signing moves off Workers and the architecture changes |
 | 2 | `GET /api/health` | `mode: "live"`, every secret `true`, `builder.codeValid: true`, `problems: []` |
 | 3 | `GET /` and `/restricted` | **200**, not 500. A 500 is the OpenNext I/O-context bug — see §8 |
-| 4 | `GET /api/geoblock` | Returns `country`/`region` (**not** `countryCode`/`regionCode`) |
+| 4 | `GET /api/geoblock` | `degraded: false` **and** a non-null `countryCode`. ⚠️ Read this carefully: **our** route returns `countryCode`/`regionCode`; **Polymarket's upstream** returns `country`/`region`. Do not "correct" ours to match the upstream — that inverts the fix. `degraded: true` is the real failure signal, and it presents as a *plausible* close-only answer |
 | 5 | Geo gate | Blocked region → redirect to `/restricted`; `POST /api/orders` from close-only → **451** |
 | 6 | Login end-to-end | Real browser: Privy login → `/api/auth/me` returns a user **with** `signerAddress` |
 | 7 | `POST /api/builder/sign` | 401 anonymous; four `POLY_BUILDER_*` fields when signed in |
@@ -259,6 +264,9 @@ npm run builder:provision -- verify-fees   # asserts wrangler.jsonc == profile
 | Workers Free | 3 MiB gzipped |
 | Workers **Paid** | 10 MiB gzipped |
 | **Measured 2026-08-04** | **4.79 MiB** (`22432.58 KiB / gzip: 4904.02 KiB`) |
+| **Re-measured 2026-08-05** | **4.79 MiB** (`22432.58 KiB / gzip: 4904.03 KiB`) — flat, +0.01 KiB |
+
+✅ **The Paid requirement is no longer a projection.** Cloudflare rejected the real upload on the client's account with code 10027 (§2.1). Free is not a fallback to keep in reserve — it cannot host this app at all, and never will: the bundle only grows.
 
 ```bash
 npx opennextjs-cloudflare build
@@ -285,10 +293,10 @@ Migrating later is expensive: a new profile means a new `bytes32` code, new API 
 | Client session fine, **every server route 401s** | Privy identity tokens disabled | §2.5. `/api/auth/me` reports `missing_identity_token` |
 | `wallet_status_failed` on authenticated routes | `createUserClient` without `apiKey` — hits the Deposit Wallet deploy path, which needs Relayer auth | Pass `builderApiKey()` from `@polymarket/client/node`. Typed optional, mandatory in practice |
 | `InvariantError: Deposit Wallet deployment requires a Relayer API Key or Builder API Key` during provisioning | `createSecureClient` without `wallet` tries to deploy a Deposit Wallet — circular when minting the *first* builder key | Pass `wallet: <signer's own EOA>` to select EOA mode. Auth-only ops never need a Deposit Wallet |
-| Unrestricted users told they are **close-only** | Reading `countryCode`/`regionCode` from `/api/geoblock`, which returns `country`/`region` | `lib/geo/edge.ts` accepts both. Undocumented endpoint — re-verify each milestone |
+| Unrestricted users told they are **close-only** | Reading `countryCode`/`regionCode` off **Polymarket's upstream** `https://polymarket.com/api/geoblock`, which returns `country`/`region`. (Our own `/api/geoblock` route deliberately returns the `*Code` spelling — the two are different shapes and only the upstream one is the trap) | `lib/geo/edge.ts` accepts both spellings. Undocumented endpoint — re-verify each milestone |
 | `verify-fees` fails right after a rate change | ~4-day fee lead time, not a config error | §7.2. Wait for the effective date |
 | Builders panel says "No builder API keys yet" | Panel is unreliable | `npm run builder:provision -- status`. **Never re-mint on the panel's say-so** |
-| Deploy rejected on size | Over the plan cap | §7.3. Confirm Workers Paid |
+| `✘ Your Worker failed validation because it exceeded size limits` / `exceeded the size limit of 3 MiB` **[code: 10027]** | Account is on Workers **Free**. 3 MiB is the *free* cap — seeing 3 MiB rather than 10 MiB in the message is itself the diagnosis | Upgrade at `dash.cloudflare.com/<account-id>/workers/plans`, then redeploy. §7.3. **No deployed code is created on this failure** — size validation runs before the script bundle is committed. An empty *service shell* (name + `production` environment, no code, no bindings) may still appear in the dashboard — that's expected, not a sign of a partial deploy; see §2.1. No rollback needed |
 | Build fails: `Module not found: '@stripe/stripe-js'` | `--legacy-peer-deps` stops npm auto-installing legitimate peers; Privy statically imports the fiat onramp | Keep `@stripe/stripe-js` as a pinned direct dependency. Do not "clean up" the unused-looking package |
 | `Failed to fetch Geist from Google Fonts` | Something reintroduced `next/font/google` | Fonts are self-hosted in `src/app/fonts/` via `next/font/local`. Never reintroduce the network dependency |
 | `tsc` errors that make no sense after a config change | Aggressive caching | `rm -rf .next tsconfig.tsbuildinfo` and rebuild |
@@ -318,3 +326,5 @@ If the Cloudflare account, Worker, or bucket is lost, rebuild in this order:
 | Date | Change |
 |---|---|
 | 2026-08-04 | Created during Phase 0. Bumped `compatibility_date` 2025-03-25 → 2026-08-01; added CSP + security headers to `next.config.ts` (report-only); generated `cloudflare-env.d.ts`, whose workerd types surfaced 6 real `unknown` type errors now fixed; measured bundle at **4.79 MiB gzipped** (up from 2.90). Verified on local workerd: `/` and `/restricted` 200, all security headers present, `/api/spike/signing` `passed: true` with `runtime: workerd` |
+| 2026-08-05 | **First deploy attempted against the client's Cloudflare account — rejected, account is on Workers Free** (`code: 10027`, §2.1/§7.3). Completed before the block: scoped API token convention (`.env.cloudflare`, §2.1), R2 bucket `polymarket-platform-cache` created (§2.2), full gate green (lint/typecheck/34 tests/build/`check:secrets`), bundle re-measured flat at 4.79 MiB, and all §5 probes passing on local workerd. Corrected **§5 check 4**, which described Polymarket's upstream `country`/`region` shape while pointing at *our* `/api/geoblock` route (returns `countryCode`/`regionCode`); as written it would have led someone to "fix" the correct code and reintroduce the fail-closed bug. Same clarification applied to the §8 row |
+| 2026-08-05 | **Correction:** "account left clean (0 scripts)" was imprecise. Verified via dashboard screenshot + `wrangler deployments list` (empty, exit 0) + `GET /workers/scripts` (`result: []`) that an empty **Worker service shell** (`polymarket-integration-platform`, no code, no bindings, no versions, 0 invocations) exists in the newer dashboard even though no script API lists it. Harmless, not billed, is the correct deploy target — see §2.1 |
