@@ -2,7 +2,7 @@
 ## Polymarket Integration Platform
 
 > Companion to [srs.md](srs.md) (requirements) and [CLAUDE.md](CLAUDE.md) (working context).
-> **Last updated:** 2026-08-02 · **Status:** not started
+> **Last updated:** 2026-08-07 · **Status:** Milestone 1 mostly complete; Weeks 2–4 (Market Discovery, Trading Engine, Portfolio/Launch) now being executed as one combined build phase — see §5–7. Billing milestones/dates below are unchanged; this only affects build sequencing.
 > **Target:** Next.js 16 · React 19.2 · Cloudflare Workers (OpenNext) · Polygon mainnet
 > **Verified against** `docs.polymarket.com`, `nextjs.org`, and `opennext.js.org` on 2026-08-02
 
@@ -31,7 +31,7 @@ Anything marked 🔴 is **blocked on the client** (a decision or a credential). 
 | ~~P-5~~ | ~~Builder payout wallet~~ | ✅ **Resolved 2026-08-04** — not a separate wallet. Commission accrues to the profile-owner wallet `0xdd288d80…D0Ba`, accepted as-is. Handover transfers custody to the client | — | — | — |
 | P-6 | **Embedded wallet provider account** | Privy / Turnkey / Magic dashboard | App ID + App Secret | Week 1 D2 | Login (🔴 OI-4) |
 | P-7 | **Cloudflare account — Workers *Paid* plan** | Client's Cloudflare | Account ID + API token (Workers Scripts: Edit) | Week 1 D1 | Deploys. ⚠️ Paid required: free tier caps Workers at 3 MiB gzipped, which this app will exceed (10 MiB on paid) |
-| P-8 | **Production domain** | Client registrar | DNS delegated to Cloudflare | Week 3 | Launch, Verified application |
+| P-8 | **Production domain** | Client registrar | DNS delegated to Cloudflare | Week 3 | Launch, Verified application — **`POLYBETS.XYZ` supplied 2026-08-07, client states it's pointed at Cloudflare; zone delegation not yet independently verified** (check via dashboard/`wrangler` before wiring `wrangler.jsonc` custom-domain routes, see [deployment.md §2.6](deployment.md)) |
 | P-9 | **Polygon RPC endpoint** | Alchemy / Infura / QuickNode | HTTPS URL + key | Week 1 D3 | On-chain reads |
 | P-10 | **GitHub repo** | Client org | Repo + push access | Week 1 D1 | CI/CD |
 | P-11 | **AI provider key** (Phase 2) | Anthropic / OpenAI | API key | Phase 2 | Predict AI (🔴 OI-2) |
@@ -416,20 +416,20 @@ export default defineCloudflareConfig({ incrementalCache: r2IncrementalCache });
 ### Step 2.3 — Discovery UI (FR-2.1–2.4)
 Market grid/list with implied probability from best bid/ask, volume, liquidity, end date. Category filters, sort, search. Skeleton loaders. Server Components for the initial paint; client hydration only for interactivity.
 
+Category filters read **Gamma's live taxonomy** (see FR-2.2 decision, [srs.md](srs.md)) — don't hardcode a fixed category list; render chips from whatever categories the API returns.
+
+**Reuse, don't rebuild:** the nav/sidebar shell (`nav-bar.tsx`, `right-sidebar.tsx`) already has labeled placeholder slots for this exact milestone (disabled "Search markets" input, `Watchlist`/`Trending topics` cards explicitly captioned "lands with discovery in Milestone 2"), plus a reusable icon set (`SearchIcon`, `TrendingIcon`, `ChartIcon`, `GridIcon` in `components/ui/icons.tsx`) and primitives (`Card`, `Row`, `StatusDot` in `components/ui/primitives.tsx`). Wire discovery UI into those slots rather than building parallel components.
+
 ✅ **Done when:** browsing, filtering, and searching work on mobile (375 px) and desktop, FCP < 2 s (NFR-2).
 
-### Step 2.4 — Market detail page
-Route `market/[slug]`. Question, resolution criteria, end date, outcomes with prices, volume/liquidity, price history chart. Order ticket is a disabled placeholder this week.
+### Step 2.4 — Market detail page — ✅ built 2026-08-07, ahead of schedule
+Route `market/[slug]`, keyed by **event** slug (not a single market's) via `getCachedEventBySlug` — an event can bundle many binary markets (one per candidate), and the page needs all of them for `OutcomeTradeList`. Built once trading existed (Milestone 3's `TradeModal`) to actually put on it, and because manual testing showed trading straight from a card tile felt wrong — Polymarket's own flow is browse card → detail page → trade, not trade-from-tile. Cards on `/` now `<Link>` here instead of opening the ticket directly.
 
-⚠️ **Next 16: `params` and `searchParams` are Promises.** Run `npx next typegen` to generate the `PageProps` / `LayoutProps` / `RouteContext` helpers, then:
-```ts
-export default async function Page(props: PageProps<'/market/[slug]'>) {
-  const { slug } = await props.params;
-  const query   = await props.searchParams;
-}
-```
+Shows: title, image, description, volume, end date, every outcome ranked by snapshot price with a "Trade" button each (single-market events get a simpler Yes/No bar instead of a list). No price history chart yet. Order ticket is **not** a placeholder — it's the same `TradeModal` used everywhere, opened per-outcome.
 
-✅ **Done when:** detail page renders any live market correctly, including multi-outcome markets.
+Params typed manually (`{ params: Promise<{ slug: string }> }`) rather than via the generated `PageProps<'/market/[slug]'>` helper — `next typegen` needs a dev/build pass to pick up a route that didn't exist on disk yet when this was written; the manual form is always correct for Next 16's actual (Promise-based) contract and can be swapped for the generated helper later without behavior change.
+
+✅ **Done when:** detail page renders any live market correctly, including multi-outcome markets. — *Built and typechecked; not yet manually verified in a browser (see CLAUDE.md).*
 
 ### Step 2.5 — Error and empty states
 Market resolved/closed, no results, Gamma unreachable, geoblocked. Every one designed, not a raw error.
@@ -446,6 +446,8 @@ Markets list, filter, search, and detail-render from Gamma with correct implied 
 
 ### Step 3.1 — Market WebSocket (FR-3.4)
 `use-orderbook.ts` → `wss://ws-subscriptions-clob.polymarket.com/ws/market`. Subscribe per token ID. Handle book snapshots + deltas. **Reconnect with exponential backoff and full state resync on reopen** (NFR-6) — a stale book after a silent disconnect is how users get filled at prices they didn't expect.
+
+⚠️ **Use `@polymarket/client`'s `subscribe()` action, don't hand-roll a raw `WebSocket`.** Confirmed 2026-08-07 in `dist/types-vvy5wT5V.d.ts`: the SDK exports `subscribe()` with typed `MarketSubscription`/`UserSubscription`/`SubscriptionHandle<TEvent>`, overloaded for both `BasePublicClient` and `BaseSecureClient`. It wraps reconnect/resubscribe semantics that would otherwise need to be built by hand — check its behavior against NFR-6 before adding custom reconnect logic on top.
 
 ✅ **Done when:** book updates stream < 500 ms p95, survive a forced network drop, and resync correctly.
 
@@ -464,29 +466,42 @@ Block submission unless pUSD balance ≥ `required`. Show the full breakdown in 
 
 ✅ **Done when:** unit tests cover rounding at 1 bps granularity; an underfunded order is blocked client- and server-side.
 
-### Step 3.4 — Order signing service (FR-3.5, SEC-2) 🔒 **security-critical**
-`POST /api/orders` — server-only:
-1. Verify session + geoblock tier (reject `blocked` and `close-only` opens).
-2. Rebuild the order server-side from token ID, side, size, price — **never trust a client-supplied order object**.
-3. Re-run the balance/fee check.
-4. Attach the **`bytes32` builder code** (P-1) into the signed V2 order struct.
-5. Sign and submit via `@polymarket/client`.
-6. Rate-limit per user and globally (SEC-3) — these routes spend our builder quota.
+### Step 3.4 — Pre-trade authorization + client-side signing (FR-3.5, SEC-2) 🔒 **security-critical**
 
-✅ **Done when:** orders place successfully, every fill shows the builder code in its on-chain `OrderFilled` event, and a tampered client payload is rejected.
+⚠️ **Superseded 2026-08-04, corrected here 2026-08-07 — this step previously described full server-side signing, which was abandoned.** Server-held Privy delegation hit `401 No valid authorization keys or user signing keys available` (needs both user wallet-delegation *and* a Privy authorization key, neither of which exist) and sat awkwardly with the non-custodial framing. The actual, working, already-implemented architecture is:
 
-### Step 3.5 — Market orders (FR-3.2)
-`placeMarketOrder({ tokenId, side, amount })` with `OrderSide.BUY/SELL`. Slippage estimate from live book depth + confirmation step (FR-3.7).
+1. **`POST /api/orders`** (`src/app/api/orders/route.ts`, built) is **pre-trade authorization only**: `requireUser()` session check, geoblock-tier gate (reject `blocked`/`close-only` opens via `canOpenPositions`), input validation, fee disclosure via `describeBuilderConfig`. It never builds, signs, or submits an order.
+2. **The browser signs.** `src/lib/polymarket/browser-client.ts` (built) constructs a viem `WalletClient` from the user's own Privy embedded-wallet provider and calls `createSecureClient({ signer, apiKey: remoteBuilderSigning({ url: "/api/builder/sign" }) })`. The **builder code** is embedded in the signed order struct client-side (`builderCode()`); the **builder secret never leaves the server**.
+3. **`POST /api/builder/sign`** (`src/app/api/builder/sign/route.ts`, built) is a generic HMAC-signing endpoint: resolves builder auth server-side, computes `buildHmacSignature`, returns the key/passphrase/signature/timestamp headers the browser needs for every private CLOB call (orders, cancels, balance reads) — not order-specific.
+4. Rate-limit `/api/builder/sign` per user and globally (SEC-3) — it's called on every private request and spends builder quota regardless of which order operation triggered it.
 
-✅ **Done when:** a market buy and sell each fill on mainnet and appear in positions.
+**Narrowed, not abandoned SEC-2**: a tampered client payload can still only misspend the tampering user's own funds (their own key signed it) — it can no longer move someone else's funds, which was the actual threat SEC-2 guards against.
 
-### Step 3.6 — Limit orders (FR-3.3)
-Price + size + expiry (GTC/GTD). Open-orders panel with cancel (`DELETE /api/orders`). Surface Liquidity Rewards eligibility where applicable (FR-5.1).
+**Accepted residual exposure:** any signed-in user can read `POLY_BUILDER_API_KEY`/`POLY_BUILDER_PASSPHRASE` from `/api/builder/sign` responses (not the secret) — identifies the builder account but can't forge requests without it. Rotate P-2…P-4 via `builder:provision -- derive-keys` if abused.
+
+**Cleanup carried by this step:** delete `lib/polymarket/clob.ts` and `api/wallet/{deploy,qr,status}/route.ts` — dead code from the abandoned server-signing path (confirmed 2026-08-07: nothing in the live UI calls them).
+
+✅ **Done when:** dead server-signing code removed; `/api/orders` + `/api/builder/sign` covered by tests; a tampered client-supplied order object still can't move another user's funds.
+
+### Step 3.4a — Token allowance / trading approvals — ✅ built 2026-08-07
+Went the "explicit action" route, not the auto-on-deposit one originally proposed here: `enableTradingApprovals()` (`browser-client.ts`, wraps `client.setupTradingApprovals()`) is gated behind an "Enable trading" button in `TradeModal`, shown only when `hasTradingApprovals()` finds no positive allowance. That check is a heuristic — it treats *any* positive entry in `fetchBalanceAllowance`'s `allowances` map as "already approved," which may not enumerate every spender the exchange actually needs — so a real order failing on an allowance error is still possible even after this check passes; the button stays available as a manual fallback.
+
+✅ **Done when:** a fresh Deposit Wallet can place its first order with no separate manual approval step, and re-running approval on an already-approved wallet is a safe no-op. — *Not yet independently verified against a real mainnet order; built and typechecked, not yet run.*
+
+### Step 3.5 — Market orders (FR-3.2) — ✅ SDK calls built (Milestone 1); ✅ UI built 2026-08-07
+`placeMarketBuy`/`placeMarketSell` in `browser-client.ts` call `client.placeMarketOrder({ tokenId, side, amount, builderCode })`. `TradeModal` (`components/trade/trade-modal.tsx`) is the order ticket: connect → check/grant approvals → pick Buy/Sell and an outcome → enter amount → fee breakdown (live `feeBps` from `/api/orders`, never hardcoded client-side) → submit. Still a modal (not embedded inline) but now opens from the market detail page's `OutcomeTradeList` (Step 2.4, built same day) rather than directly from a card tile — cards navigate to the detail page first, matching Polymarket's own browse-then-trade flow.
+
+Slippage protection is a `maxPrice`/`minPrice` computed from Gamma's cached snapshot price ± 5%, **not** a live order-book estimate — FR-3.7's "slippage estimate from live book depth" still needs Step 3.1's WebSocket. Sell isn't checked against actual share holdings (needs the Data API, Milestone 4) — an over-sell is rejected by Polymarket, not caught client-side.
+
+✅ **Done when:** a market buy and sell each fill on mainnet, appear in positions, and the ticket shows a slippage estimate before submit. — *UI built and typechecked; a real signed mainnet fill has not yet been confirmed end-to-end.*
+
+### Step 3.6 — Limit orders (FR-3.3) — not started
+SDK supports it (`client.placeLimitOrder(request: PrepareLimitOrderRequest)`, GTC/no-expiry or GTD/`expiration` ≥ `MIN_GTD_EXPIRY_SECONDS`) and `config.ts` already has the GTD expiry constants scaffolded (`MIN_GTD_EXPIRY_SECONDS`, `GTD_EXPIRY_BUFFER_SECONDS`) — nothing calls them yet. Add a `placeLimitBuy`/`placeLimitSell` pair to `browser-client.ts` alongside the existing market-order functions. Price + size + expiry (GTC/GTD). Open-orders panel with cancel — use the SDK's `cancelOrder`/`cancelOrders`/`cancelAll` client-side (no server round-trip needed, consistent with the client-signing architecture; a `DELETE /api/orders` route is not required unless cancellation needs its own pre-flight check). Surface Liquidity Rewards eligibility where applicable (FR-5.1).
 
 ✅ **Done when:** a limit order rests in the book, is visible on polymarket.com, and cancels cleanly.
 
 ### Step 3.7 — User WebSocket (FR-4.5)
-`use-user-channel.ts` → `.../ws/user`, L2-authenticated. Live fills, order status, balance changes. Toast on fill.
+`use-user-channel.ts` → `.../ws/user`, L2-authenticated (via the SDK's `subscribe()`, see Step 3.1). Live fills, order status, balance changes. Toast on fill.
 
 ✅ **Done when:** a fill updates the UI with no manual refresh.
 
@@ -611,3 +626,4 @@ Also unresolved:
 | 2026-08-02 | Initial plan. Corrected deployment target from Cloudflare Pages → Workers + OpenNext (§2.1); added client prerequisites (§1); pulled the builder-attribution test order forward into Milestone 1 |
 | 2026-08-02 | **Target set to Next.js 16** (§2.2). Next.js 14 is past OpenNext's Q1 2026 EOL. Updated: geoblock gate `middleware.ts` → `proxy.ts` (Node runtime, Step 1.4); async `cookies`/`params`/`searchParams` (Steps 1.5, 2.4); caching rewritten for Cache Components + `use cache` (Step 2.2); ESLint CLI now a separate CI step (Step 1.2); scaffold config for Turbopack/`images.remotePatterns` (Step 1.1); Workers **Paid** plan added to P-7 |
 | 2026-08-02 | **Milestone 1 build.** ⚠️ **Step 1.4 reversed: the gate is Edge `middleware.ts`, not `proxy.ts`** — OpenNext cannot build Next 16 Node middleware ([#962](https://github.com/opennextjs/opennextjs-cloudflare/issues/962)); the previous entry's guidance was wrong for our deployment target. OI-4 resolved to Privy. `builder-relayer-client` dropped as redundant. Workers **Paid** confirmed empirically (2.90 MiB gzipped with no UI yet vs a 3 MiB free cap) |
+| 2026-08-07 | **Weeks 2–4 merged into one combined build phase** (Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch) — billing milestones/dates unchanged, only build sequencing. Corrected Step 3.4: rewritten from server-side signing (never actually built) to the real client-side-signing architecture resolved 2026-08-04, previously documented only in CLAUDE.md. Added Step 3.4a (token-allowance flow — gap found: `setupTradingApprovals` only wired into dead code). Step 3.1 notes the SDK's `subscribe()` action instead of a hand-rolled WebSocket. Step 2.3 notes category filters read Gamma's live taxonomy, not a hardcoded list, and to reuse the existing nav/sidebar placeholder slots. P-8 updated: domain `POLYBETS.XYZ` supplied, client states it's pointed at Cloudflare, zone delegation not yet independently verified. Full gap analysis against a "complete Polymarket-parity platform" wishlist (copy trading, sports AI, full category coverage) recorded in [CLAUDE.md](CLAUDE.md) — copy trading and sports AI remain Phase 2, unfunded, blocked on OI-5/undefined spec respectively. |

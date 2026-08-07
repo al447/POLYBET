@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
 
 import { isAuthConfigured, isTradingConfigured } from "@/lib/auth/public-config";
+import { readCollateralBalance } from "@/lib/polymarket/browser-client";
 import type { BrowserClient } from "@/lib/polymarket/browser-client";
 import { Card, Row, StatusDot, shortenAddress } from "@/components/ui/primitives";
 
@@ -48,15 +49,6 @@ function formatCollateral(raw: bigint): string {
   return `${whole}.${fraction.slice(0, 2)}`;
 }
 
-async function readBalance(client: BrowserClient): Promise<bigint> {
-  const { fetchBalanceAllowance } = await import("@polymarket/client/actions");
-  const { AssetType } = await import("@polymarket/bindings/clob");
-  const result = await fetchBalanceAllowance(client, {
-    assetType: AssetType.COLLATERAL,
-  });
-  return BigInt(result.balance ?? 0n);
-}
-
 function walletStateFrom(client: BrowserClient, balance: bigint): WalletState {
   const account = (client as unknown as { account?: { wallet?: string } }).account;
   return {
@@ -97,7 +89,7 @@ function ConnectedWalletPanel() {
       const client = await createBrowserClient(provider as never, embedded.address);
       clientRef.current = client;
 
-      setPhase({ state: "ready", wallet: walletStateFrom(client, await readBalance(client)) });
+      setPhase({ state: "ready", wallet: walletStateFrom(client, await readCollateralBalance(client)) });
     } catch (error) {
       setPhase({
         state: "error",
@@ -118,7 +110,7 @@ function ConnectedWalletPanel() {
 
     let cancelled = false;
     const timer = setInterval(() => {
-      void readBalance(client)
+      void readCollateralBalance(client)
         .then((balance) => {
           if (!cancelled) {
             setPhase({ state: "ready", wallet: walletStateFrom(client, balance) });

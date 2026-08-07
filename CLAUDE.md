@@ -2,12 +2,13 @@
 
 Working context for the Polymarket Integration Platform. **Keep this file current** — see [Maintenance Protocol](#maintenance-protocol) at the bottom.
 
-> **Last updated:** 2026-08-05 · **Phase:** Milestone 1 in progress — deployment Phase 0 complete, **not yet deployed** · **Repo:** initialized, 5 commits
+> **Last updated:** 2026-08-07 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
 >
 > **Deploy status:** first deploy **attempted and rejected 2026-08-05** — the client's Cloudflare account is on **Workers Free** and the upload failed with `exceeded the size limit of 3 MiB [code: 10027]`. **Corrected 2026-08-05:** the account is not literally empty — an empty `polymarket-integration-platform` Worker *service* shell exists in the dashboard (name reserved, no code, no bindings, no versions, 0 invocations), visible at Workers & Pages but absent from the `GET /workers/scripts` API and `wrangler deployments list`. This is expected and harmless — see [deployment.md §2.1](deployment.md#21-authenticate).
 >
 > - **P-7** — *half done.* Account authenticated (`Polybet365@gmail.com's Account`, token in `.env.cloudflare`), R2 bucket `polymarket-platform-cache` created. **Blocked on the client upgrading to Workers Paid ($5/mo).**
-> - **P-8** (domain) and **P-9** (`POLYGON_RPC_URL`, still empty) — unchanged.
+> - **P-8 (domain) — updated 2026-08-07.** Production domain is **`POLYBETS.XYZ`**, client states it's already pointed at Cloudflare. **Not yet independently verified** — no Cloudflare zone/DNS check has been run from this environment. Confirm zone delegation is active before wiring `wrangler.jsonc` custom-domain routes or relying on it for the Verified-tier application's live-demo URL.
+> - **P-9** (`POLYGON_RPC_URL`, still empty) — unchanged.
 >
 > Everything not requiring client access is done and verified on local workerd. See [deployment.md](deployment.md).
 
@@ -18,15 +19,27 @@ src/
   middleware.ts            geo gate (Edge — NOT proxy.ts, see below)
   app/
     restricted/            geoblocked landing
+    market/[slug]/         market detail page, keyed by EVENT slug (Step 2.4, built 2026-08-07)
     api/health             secret presence + builder readiness
     api/geoblock           per-request geo tier (never cached)
-    api/wallet/deploy      Deposit Wallet provisioning
-    api/orders             order placement (security-critical)
+    api/auth/me            server-verified session (FR-1.1)
+    api/builder/sign       HMAC signing for client-side order signing (SEC-1/2)
+    api/orders             pre-trade authorization — NOT order placement, see Traps
+    api/markets            Gamma event-list proxy, cached (FR-2.1/2.5, new)
+    api/spike/signing      Workers signing diagnostic (Milestone 1 gate)
   lib/
     env.ts                 request-time secrets via getCloudflareContext
     geo/{jurisdictions,edge,index}.ts
     auth/{types,privy,session}.ts
-    polymarket/{config,fees,builder,clob}.ts
+    polymarket/gamma-types.ts                   types + parsing, NOT server-only (client-safe)
+    polymarket/{config,fees,builder,gamma}.ts   clob.ts removed 2026-08-07, was dead code
+    polymarket/browser-client.ts                client-side signing, balance/approvals (market orders; limit orders pending)
+  components/
+    auth/, wallet/, geo/, layout/{nav-bar,nav-search,right-sidebar,privy-auth-area}, ui/{primitives,icons}
+    markets/{market-card,market-grid,discovery-section}   Milestone 2, live — cards link to /market/[slug], don't trade inline
+    markets/{outcome-list,market-trading-section}         detail-page layout: outcome list + sticky panel, matches Polymarket's own event-page pattern (built 2026-08-07)
+    trade/trading-panel.tsx                               sticky order ticket (market orders only), Milestone 3 — not yet confirmed against a real mainnet fill
+    portfolio/                                            not yet created — Milestone 4
 scripts/
   check-client-bundle.mjs  CI leak guard
   provision-builder.mjs    P-1..P-5 provisioning + handover
@@ -57,9 +70,9 @@ A white-label prediction market frontend on the client's own domain. It does **n
 
 ## Current state
 
-Nothing is built. The directory is empty — no `package.json`, no git repo.
+*(This section is stale from project inception — kept only until the remaining OIs below resolve; see the top banner and Milestones section for actual build status.)*
 
-**Before writing code, 4 decisions are blocking** (full list in [srs.md §9](srs.md)):
+**3 decisions remain blocking** (full list in [srs.md §9](srs.md)):
 
 | ID | Blocking question |
 |---|---|
@@ -321,8 +334,8 @@ Secrets go into Cloudflare via `wrangler secret put` — the dev team needs Clou
 ## Security rules
 
 - Builder API key / secret / passphrase live **only** in Cloudflare env vars. Never in the client bundle, never behind `NEXT_PUBLIC_*`.
-- All order signing happens server-side in Workers.
-- Signing routes must be authenticated and rate-limited — they spend our builder quota.
+- Order signing happens **client-side**, by the user's own key (see "RESOLVED 2026-08-04 — client-side signing chosen" in Traps). The builder secret never leaves the server; the browser only ever receives short-lived HMAC headers from `/api/builder/sign`.
+- `/api/builder/sign` must stay authenticated and rate-limited — every private CLOB call goes through it, so it spends our builder quota regardless of which order operation triggered it.
 - No private keys in logs, error traces, or analytics.
 - Secret scanning in CI; strict CSP on trading routes.
 
@@ -340,6 +353,26 @@ Dates assume a 2026-08-03 start (unconfirmed, OI-7).
 | 4 | Aug 24–30 | Portfolio, withdrawals, E2E tests, production launch | 100 |
 
 **Phase 2 (Predict AI, Copy Trading) is in no milestone and is unfunded.** Building to this schedule delivers Phase 1 only. OI-2.
+
+**Weeks 2–4 combined (decision, 2026-08-07).** Engineering now treats Market Discovery, Trading Engine & WebSockets, and Portfolio/Testing & Launch as one continuous build rather than three sequentially-gated weeks — several Week 3 items (fee engine, pre-trade authorization, client-side market-order signing) were already built ahead of schedule during Milestone 1, and the remaining work in all three weeks shares dependencies (Gamma client → discovery UI → order ticket → WebSockets → portfolio) that don't naturally split at week boundaries. **Billing milestones and the $550/4-week total in [srs.md §8](srs.md) are unchanged** — this is a sequencing decision, not a scope or commercial change. Detailed step-by-step breakdown (with what's already built vs. remaining) is in [implementation.md §5–7](implementation.md).
+
+**Revisions:** up to 4 client revision rounds included in the fixed price (see [srs.md §8](srs.md)).
+
+### Gap analysis — "complete Polymarket-parity platform" wishlist vs. current scope (2026-08-07)
+
+The client has separately described wanting full Polymarket.com feature parity: entire market categories/segments/events, copy trading, sports-betting AI, deposits, signup/signin, and "the entire available features on the polymarket platform." Checked against the combined Weeks 2–4 plan above:
+
+| Wishlist item | Status |
+|---|---|
+| Entire market categories/segments/events | **Covered at no extra cost.** Discovery UI (Step 2.3, implementation.md) reads Gamma's live category taxonomy instead of a hardcoded list — see the FR-2.2 decision in srs.md. |
+| Users' deposits | **Done.** Client-provisioned Deposit Wallet, QR + address + balance-polling flow (`deposit-wallet-panel.tsx`). |
+| Signup/signin | **Done, kept as-is per client direction 2026-08-07.** Privy embedded wallet, email-only login. No standalone `/login` page — auth is embedded in the nav bar / home page. |
+| Copy trade feature | **Not in scope — Phase 2, unfunded, legally blocked.** OI-5: auto-executing on a user's behalf requires server-held delegated signing or session keys, which conflicts with the non-custodial architecture (§6.1, srs.md) and needs a product + legal decision before any code. FR-8 in srs.md. |
+| Sports betting AI | **Not in scope — Phase 2, unfunded, unspecified.** FR-7 in srs.md has no chosen model/provider/data source/cost — "not estimable as written." |
+| Domain `POLYBETS.XYZ` → Cloudflare | **Supplied, unverified.** Client states it's pointed at Cloudflare; DNS zone/nameserver delegation not yet checked from this environment (P-8, deployment.md). |
+| Up to 4 revisions | **Commercial term, recorded** in srs.md §8 — no code impact. |
+
+**The two real gaps against "complete platform" are copy trading and sports AI** — both are deliberately excluded from the current build per their existing blockers (legal/custody question for copy trading, undefined spec/budget for sports AI), not oversights. Revisit as a separately scoped, separately priced Phase 2 once OI-5 is resolved and a sports-AI provider/budget is chosen (see [implementation.md §8](implementation.md)).
 
 ---
 

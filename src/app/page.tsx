@@ -3,20 +3,24 @@ import { Suspense } from "react";
 import { GeoBanner } from "@/components/geo/geo-banner";
 import { ReadinessPanel } from "@/components/status/readiness-panel";
 import { RightSidebar } from "@/components/layout/right-sidebar";
+import { DiscoverySection, DiscoverySectionSkeleton } from "@/components/markets/discovery-section";
 
 /**
- * Milestone 1 surface: sign in, provision a Deposit Wallet, add funds.
+ * Home page: sign in, provision a Deposit Wallet, add funds, browse markets.
  *
- * Market discovery and the trading ticket land in Milestone 2; this page
- * exists to make the onboarding chain visible and testable end to end.
+ * Milestone 2 added market discovery (`DiscoverySection`) below the
+ * Milestone 1 onboarding surface; the trading ticket is still to come
+ * (Milestone 3 — cards link out to polymarket.com's own event page for now).
  *
  * Two-column shell (main content + right info rail) matching the site's nav
  * bar pattern — see `RightSidebar` for what moved there and why.
  *
- * Both server panels read request-scoped data (`headers()`, the Cloudflare
- * env), which Cache Components treats as uncached. Each needs its own
- * <Suspense> boundary or the build fails with "Uncached data was accessed
- * outside of <Suspense>". The static shell prerenders; these stream in.
+ * Every server panel here reads request-scoped data (`headers()`, the
+ * Cloudflare env, or in DiscoverySection's case `useSearchParams()` further
+ * down the tree) — Cache Components treats that as uncached. Each needs its
+ * own <Suspense> boundary or the build fails with "Uncached data was
+ * accessed outside of <Suspense>". The static shell prerenders; these stream
+ * in.
  */
 export default function Home() {
   return (
@@ -38,17 +42,25 @@ export default function Home() {
           </Suspense>
         </div>
 
-        <Suspense
-          fallback={
-            <div className="h-32 rounded-xl border border-zinc-800 bg-zinc-900/40" />
-          }
-        >
-          <ReadinessPanel />
+        <div className="mb-8">
+          <Suspense
+            fallback={
+              <div className="h-32 rounded-xl border border-zinc-800 bg-zinc-900/40" />
+            }
+          >
+            <ReadinessPanel />
+          </Suspense>
+        </div>
+
+        <Suspense fallback={<DiscoverySectionSkeleton />}>
+          <DiscoverySection />
         </Suspense>
       </main>
 
       <div className="mt-8 lg:mt-0">
-        <RightSidebar />
+        <Suspense fallback={<div className="h-96 rounded-xl border border-zinc-800 bg-zinc-900/40" />}>
+          <RightSidebar />
+        </Suspense>
       </div>
     </div>
   );

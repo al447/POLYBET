@@ -7,8 +7,8 @@
 | **Platform** | Next.js 16 (App Router) — see C-7 |
 | **Hosting** | Cloudflare Workers (OpenNext) — see C-6 |
 | **Chain** | Polygon Mainnet |
-| **Document version** | 1.3 (analyzed & fact-checked) |
-| **Last updated** | 2026-08-02 |
+| **Document version** | 1.4 (analyzed & fact-checked) |
+| **Last updated** | 2026-08-07 |
 | **Source** | Client SRS v1.0 + `Polymarket_Cost_Analysis.pdf` |
 | **Status** | ⚠️ Not approved — 6 blocking open issues (see §9) |
 
@@ -190,6 +190,8 @@ The source SRS is accurate on Builder tier limits and the 4% holding-rewards APY
 | FR-2.4 | Search across market titles and metadata | Should |
 | FR-2.5 | Edge-cache Gamma responses in Workers to stay within rate limits | Must |
 
+> **Decision (2026-08-07):** FR-2.2's category filter reads Gamma's live category taxonomy rather than a hardcoded list (e.g. just Politics/Crypto/Sports). Gamma already returns whatever categories/events exist, so this covers "entire market categories" at no extra engineering cost over a fixed list.
+
 #### FR-3 Trading
 | ID | Requirement | Priority |
 |---|---|---|
@@ -197,7 +199,7 @@ The source SRS is accurate on Builder tier limits and the 4% holding-rewards APY
 | FR-3.2 | Market orders (FOK/FAK) | Must |
 | FR-3.3 | Limit orders (GTC/GTD) with open-order management + cancel | Must |
 | FR-3.4 | Live order book + last trade via `wss://ws-subscriptions-clob…/ws/market` | Must |
-| FR-3.5 | Server-side order signing with builder code — **credentials never reach the client** | Must |
+| FR-3.5 | Client-side order signing by the user's own signer, with the builder code embedded in the signed order struct — **builder secret never reaches the client**, only fetched per-request via a server-side HMAC endpoint (`/api/builder/sign`) | Must |
 | FR-3.6 | Pre-trade balance check covering notional **+ platform fees + builder fees** (C-5) | Must |
 | FR-3.7 | Slippage estimate and confirmation before submit | Should |
 
@@ -283,7 +285,7 @@ The platform holds no user funds. Each user's assets live in their own Deposit W
 | ID | Requirement |
 |---|---|
 | SEC-1 | Builder API key/secret/passphrase live only in Cloudflare env vars — never in client bundles, never in `NEXT_PUBLIC_*` |
-| SEC-2 | All order signing server-side in Workers |
+| SEC-2 | Orders are signed **client-side** by the user's own key — no order is ever rebuilt or re-signed server-side, so a tampered client payload can only misspend the tampering user's own funds, never another user's. Narrowed from the original "all signing server-side" model on 2026-08-04; see [CLAUDE.md](CLAUDE.md) |
 | SEC-3 | Rate-limit and authenticate signing routes to prevent builder-quota abuse |
 | SEC-4 | No private keys in logs, error traces, or analytics |
 | SEC-5 | Secret scanning in CI |
@@ -317,6 +319,10 @@ Fixed-price engagement, **$550 total**, 4 weeks. Payment due on delivery of each
 | | | **Total** | **$550** | **100%** |
 
 **Maintenance:** $125/month, beginning after Week 4 deployment, covering this platform **and the client's existing site**.
+
+**Revisions:** up to 4 client revision rounds included in the fixed price, scope TBD per round (not yet itemized against specific milestones).
+
+**Domain:** production domain is `POLYBETS.XYZ`. Client states it is already pointed at Cloudflare — **DNS zone delegation/activation not yet independently verified** (P-8, see [implementation.md §1.1](implementation.md)). Treat as pending until confirmed via the Cloudflare dashboard/API.
 
 > The existing site appears to be `polybet365` (`/Users/sayem/projects/PREDICT-ME`) — a separate prediction-market codebase with its own contracts, backend, and frontend. **Its maintenance scope is undefined (OI-8).**
 
@@ -360,3 +366,4 @@ Phase 2 (FR-7, FR-8) appears in **none** of the four milestones. As written, the
 | 1.1 | 2026-08-02 | Fact-checked against live docs. Added §2 (verified facts + 5 corrections), FR-4.6 withdrawals, FR-6 compliance, §3.3 architectural conflicts, §9 open issues, §10 acceptance criteria |
 | 1.2 | 2026-08-02 | Added C-6 (Cloudflare Pages → Workers + OpenNext); A-2 downgraded to a verification step as a result; stack table updated; `viem` fixed as the Web3 library. Build steps split into [implementation.md](implementation.md) |
 | 1.3 | 2026-08-02 | Added C-7 — **target version Next.js 14 → 16** (14 is past OpenNext's Q1 2026 EOL), with the breaking-change impact mapped to affected requirements. Workers Paid plan noted in C-6 |
+| 1.4 | 2026-08-07 | FR-3.5 and SEC-2 corrected from "server-side signing" to the actually-implemented client-side signing architecture (resolved 2026-08-04, previously only recorded in CLAUDE.md). FR-2.2 clarified: category filter reads Gamma's live taxonomy, not a hardcoded list. Added revisions (4 rounds) and domain (`POLYBETS.XYZ`, pending DNS verification) to §8 commercials. |

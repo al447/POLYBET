@@ -3,7 +3,8 @@ import type { ReactNode } from "react";
 import { AccountPanel } from "@/components/auth/account-panel";
 import { DepositWalletPanel } from "@/components/wallet/deposit-wallet-panel";
 import { Card } from "@/components/ui/primitives";
-import { ClockIcon, StarIcon, TrendingIcon } from "@/components/ui/icons";
+import { ClockIcon, StarIcon } from "@/components/ui/icons";
+import { TOP_CATEGORIES } from "@/lib/polymarket/gamma-types";
 
 /**
  * Right info rail (implementation.md UI shell), home page only.
@@ -15,9 +16,12 @@ import { ClockIcon, StarIcon, TrendingIcon } from "@/components/ui/icons";
  * relabeled "Portfolio": there is no positions/PnL calculation yet (that's
  * Milestone 4), so the existing label is the honest one.
  *
- * Watchlist / Trending Topics / Recent Activity have no backend yet
- * (Milestone 2+). They render as plain empty states rather than fabricated
- * data — same convention as `AuthNotConfigured` / `WalletUnavailable`.
+ * `TrendingTopicsCard` went live with the Gamma discovery engine (Milestone
+ * 2), reading the same curated `TOP_CATEGORIES` list the discovery grid's
+ * chips use — see gamma-types.ts. Watchlist and Recent Activity still have no
+ * backend (personalized watchlists aren't in any FR yet; trade history is
+ * Milestone 3) and stay plain empty states, same convention as
+ * `AuthNotConfigured` / `WalletUnavailable`.
  */
 export function RightSidebar() {
   return (
@@ -28,19 +32,34 @@ export function RightSidebar() {
       <InfoPlaceholderCard
         icon={<StarIcon className="size-5" />}
         title="Watchlist"
-        description="Market watchlists land with discovery in Milestone 2 — nothing to show yet."
+        description="Personal market watchlists aren't built yet — nothing to show."
       />
-      <InfoPlaceholderCard
-        icon={<TrendingIcon className="size-5" />}
-        title="Trending topics"
-        description="No market data source is wired up yet — trending topics come with the Gamma discovery engine."
-      />
+      <TrendingTopicsCard />
       <InfoPlaceholderCard
         icon={<ClockIcon className="size-5" />}
         title="Recent activity"
         description="Your trade history will appear here once order placement ships in Milestone 3."
       />
     </aside>
+  );
+}
+
+function TrendingTopicsCard() {
+  return (
+    <Card title="Trending topics">
+      <ul className="flex flex-wrap gap-2">
+        {TOP_CATEGORIES.map((tag) => (
+          <li key={tag.id}>
+            <a
+              href={`/?tagId=${tag.id}`}
+              className="rounded-full border border-zinc-800 bg-zinc-900/40 px-3 py-1 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200"
+            >
+              {tag.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 

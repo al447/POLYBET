@@ -14,7 +14,7 @@ import {
  * This is the round trip that proves auth actually works: the browser holds
  * Privy's cookies, and the server independently verifies them before trusting
  * any identity. Every signing route depends on the same path, so if this
- * returns a user, `/api/orders` and `/api/wallet/deploy` will authenticate too.
+ * returns a user, `/api/orders` and `/api/builder/sign` will authenticate too.
  *
  * On failure it reports *which* precondition is missing rather than a bare 401.
  * The most common misconfiguration — identity tokens not enabled in the Privy

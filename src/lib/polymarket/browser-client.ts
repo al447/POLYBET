@@ -69,6 +69,39 @@ export async function createBrowserClient(
   });
 }
 
+/** pUSD balance in base units (6 decimals). Shared by the deposit panel and the trade ticket. */
+export async function readCollateralBalance(client: BrowserClient): Promise<bigint> {
+  const { fetchBalanceAllowance } = await import("@polymarket/client/actions");
+  const { AssetType } = await import("@polymarket/bindings/clob");
+  const result = await fetchBalanceAllowance(client, { assetType: AssetType.COLLATERAL });
+  return BigInt(result.balance ?? 0n);
+}
+
+/**
+ * Heuristic check for whether trading approvals are already granted (FR-3.1
+ * prerequisite — an order cannot fill without them). `allowances` is a map of
+ * spender address to approved amount; presence of *any* positive entry is
+ * treated as "already approved" to avoid re-spending relay quota on every
+ * trade attempt. Imperfect — the exchange may require more than one spender
+ * approved and this doesn't enumerate them — so `enableTradingApprovals` is
+ * always re-offered as a manual fallback if an order fails on allowance.
+ */
+export async function hasTradingApprovals(client: BrowserClient): Promise<boolean> {
+  const { fetchBalanceAllowance } = await import("@polymarket/client/actions");
+  const { AssetType } = await import("@polymarket/bindings/clob");
+  const result = await fetchBalanceAllowance(client, { assetType: AssetType.COLLATERAL });
+  return Object.values(result.allowances ?? {}).some((value) => BigInt(value) > 0n);
+}
+
+/**
+ * Grants the ERC-20 (pUSD) + ERC-1155 (outcome token) approvals trading
+ * needs, gasless via the Relayer. Explicitly user-initiated only (same rule
+ * as `createBrowserClient`) — never call this on render.
+ */
+export async function enableTradingApprovals(client: BrowserClient): Promise<void> {
+  await client.setupTradingApprovals();
+}
+
 /**
  * The builder code for attribution.
  *
