@@ -5,6 +5,7 @@ import {
   calculateFeeBreakdown,
   checkBalance,
   fromBaseUnits,
+  limitOrderNotional,
   resolveFeeBps,
   toBaseUnits,
 } from "./fees";
@@ -103,6 +104,26 @@ describe("checkBalance", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.shortfall).toBe(1n);
+  });
+});
+
+describe("limitOrderNotional", () => {
+  it("multiplies shares by price", () => {
+    expect(limitOrderNotional("10", "0.5")).toBe(toBaseUnits("5"));
+  });
+
+  it("handles fractional shares and prices", () => {
+    expect(limitOrderNotional("3.5", "0.42")).toBe(toBaseUnits("1.47"));
+  });
+
+  it("rejects a non-positive size", () => {
+    expect(() => limitOrderNotional("0", "0.5")).toThrow(/size/);
+    expect(() => limitOrderNotional("-1", "0.5")).toThrow(/size/);
+  });
+
+  it("rejects a non-positive or malformed price", () => {
+    expect(() => limitOrderNotional("10", "0")).toThrow(/price/);
+    expect(() => limitOrderNotional("10", "abc")).toThrow(/price/);
   });
 });
 

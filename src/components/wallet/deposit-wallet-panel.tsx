@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
 
 import { isAuthConfigured, isTradingConfigured } from "@/lib/auth/public-config";
-import { readCollateralBalance } from "@/lib/polymarket/browser-client";
+import { hasDeployedWalletCached, markWalletDeployedCached, readCollateralBalance } from "@/lib/polymarket/browser-client";
 import type { BrowserClient } from "@/lib/polymarket/browser-client";
 import { Card, Row, StatusDot, shortenAddress } from "@/components/ui/primitives";
 
@@ -88,6 +88,9 @@ function ConnectedWalletPanel() {
       const provider = await embedded.getEthereumProvider();
       const client = await createBrowserClient(provider as never, embedded.address);
       clientRef.current = client;
+      // Reaching here proves the Deposit Wallet exists — cache it so a
+      // future mount (here or in TradingPanel) can skip the manual button.
+      markWalletDeployedCached(embedded.address);
 
       setPhase({ state: "ready", wallet: walletStateFrom(client, await readCollateralBalance(client)) });
     } catch (error) {
@@ -97,6 +100,25 @@ function ConnectedWalletPanel() {
       });
     }
   }, [wallets]);
+
+  /**
+   * Auto-reconnect on return visits — same reasoning as `TradingPanel`'s
+   * identical effect: gated on `phase.state === "idle"` (fires at most once
+   * per mount, never after an explicit error) and on the localStorage cache
+   * (only ever auto-triggers for a wallet we've personally observed deployed
+   * before; a genuinely new wallet still gets the manual button, so nothing
+   * risks an unprompted deploy).
+   */
+  useEffect(() => {
+    if (phase.state !== "idle" || !ready || !authenticated) return;
+    const embedded = wallets.find((w) => w.walletClientType === "privy");
+    if (!embedded || !hasDeployedWalletCached(embedded.address)) return;
+
+    async function attemptAutoConnect() {
+      await connect();
+    }
+    void attemptAutoConnect();
+  }, [phase.state, ready, authenticated, wallets, connect]);
 
   // Poll only while funded-but-empty. A deposit arrives out of band, so there
   // is nothing for the UI to react to; polling stops as soon as funds land.

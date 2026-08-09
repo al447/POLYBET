@@ -35,12 +35,32 @@ export function RightSidebar() {
         description="Personal market watchlists aren't built yet — nothing to show."
       />
       <TrendingTopicsCard />
-      <InfoPlaceholderCard
-        icon={<ClockIcon className="size-5" />}
-        title="Recent activity"
-        description="Your trade history will appear here once order placement ships in Milestone 3."
-      />
+      <RecentActivityCard />
     </aside>
+  );
+}
+
+/**
+ * Points at the portfolio page rather than claiming a feed it doesn't have.
+ * The per-trade activity feed (FR-4.4, `listActivity`) is still unbuilt — but
+ * positions and PnL now exist, so "coming in Milestone 3" was simply wrong.
+ */
+function RecentActivityCard() {
+  return (
+    <Card title="Recent activity">
+      <div className="flex items-start gap-3">
+        <span className="mt-0.5 text-zinc-600">
+          <ClockIcon className="size-5" />
+        </span>
+        <p className="text-sm text-zinc-500">
+          A full trade-by-trade history isn&apos;t built yet. Your open positions and PnL are on the{" "}
+          <a href="/portfolio" className="text-emerald-400 underline underline-offset-2">
+            portfolio page
+          </a>
+          .
+        </p>
+      </div>
+    </Card>
   );
 }
 

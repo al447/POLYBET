@@ -30,7 +30,7 @@ export function MarketTradingSection({ event }: { event: GammaEvent }) {
         />
       </div>
 
-      <div className="mt-6 lg:sticky lg:top-20 lg:mt-0">
+      <div className="mt-6 lg:sticky lg:top-20 lg:mt-0 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
         {selected ? (
           <TradingPanel market={selected.market} outcomeIndex={selected.outcomeIndex} eventTitle={event.title} />
         ) : (

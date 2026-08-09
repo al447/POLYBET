@@ -30,9 +30,9 @@ Anything marked 🔴 is **blocked on the client** (a decision or a credential). 
 | P-4 | **Builder Passphrase** | Same panel — **shown once** | string | Week 1 D1 | L2 HMAC signing |
 | ~~P-5~~ | ~~Builder payout wallet~~ | ✅ **Resolved 2026-08-04** — not a separate wallet. Commission accrues to the profile-owner wallet `0xdd288d80…D0Ba`, accepted as-is. Handover transfers custody to the client | — | — | — |
 | P-6 | **Embedded wallet provider account** | Privy / Turnkey / Magic dashboard | App ID + App Secret | Week 1 D2 | Login (🔴 OI-4) |
-| P-7 | **Cloudflare account — Workers *Paid* plan** | Client's Cloudflare | Account ID + API token (Workers Scripts: Edit) | Week 1 D1 | Deploys. ⚠️ Paid required: free tier caps Workers at 3 MiB gzipped, which this app will exceed (10 MiB on paid) |
+| P-7 | **Cloudflare account — Workers *Paid* plan** | Client's Cloudflare | Account ID + API token (Workers Scripts: Edit) | Week 1 D1 | Deploys. ⚠️ Paid required: free tier caps Workers at 3 MiB gzipped, which this app will exceed (10 MiB on paid). **Resolved 2026-08-09** — client upgraded to Paid; first deploy succeeded on `*.workers.dev`, secrets pushed, build-time vars set (see [deployment.md §2.1](deployment.md#21-authenticate)) |
 | P-8 | **Production domain** | Client registrar | DNS delegated to Cloudflare | Week 3 | Launch, Verified application — **`POLYBETS.XYZ` supplied 2026-08-07, client states it's pointed at Cloudflare; zone delegation not yet independently verified** (check via dashboard/`wrangler` before wiring `wrangler.jsonc` custom-domain routes, see [deployment.md §2.6](deployment.md)) |
-| P-9 | **Polygon RPC endpoint** | Alchemy / Infura / QuickNode | HTTPS URL + key | Week 1 D3 | On-chain reads |
+| P-9 | **Polygon RPC endpoint** | Alchemy / Infura / QuickNode | HTTPS URL + key | Week 1 D3 | On-chain reads. **Resolved 2026-08-09** — pushed via `wrangler secret put` alongside the other five §2.4 secrets |
 | P-10 | **GitHub repo** | Client org | Repo + push access | Week 1 D1 | CI/CD |
 | P-11 | **AI provider key** (Phase 2) | Anthropic / OpenAI | API key | Phase 2 | Predict AI (🔴 OI-2) |
 | P-12 | **Error tracking** (optional) | Sentry | DSN | Week 2 | Observability |
@@ -444,17 +444,21 @@ Markets list, filter, search, and detail-render from Gamma with correct implied 
 ## 6. Week 3 — CLOB Trading Engine
 **Aug 17–23 · $150 · Orders, WebSockets, signing**
 
-### Step 3.1 — Market WebSocket (FR-3.4)
-`use-orderbook.ts` → `wss://ws-subscriptions-clob.polymarket.com/ws/market`. Subscribe per token ID. Handle book snapshots + deltas. **Reconnect with exponential backoff and full state resync on reopen** (NFR-6) — a stale book after a silent disconnect is how users get filled at prices they didn't expect.
+### Step 3.1 — Market WebSocket (FR-3.4) — ✅ built 2026-08-09
+`src/hooks/use-orderbook.ts` + `src/lib/polymarket/market-data.ts`. Subscribes per token ID via an unauthenticated `createPublicClient()` — market data needs no signer, no session, no builder credential, distinct from `browser-client.ts`'s authenticated flow. Handles book snapshots + `price_change` deltas + `last_trade_price`/`tick_size_change` via a pure, unit-tested reducer (`applyMarketEvent`, `market-data.test.ts`).
 
-⚠️ **Use `@polymarket/client`'s `subscribe()` action, don't hand-roll a raw `WebSocket`.** Confirmed 2026-08-07 in `dist/types-vvy5wT5V.d.ts`: the SDK exports `subscribe()` with typed `MarketSubscription`/`UserSubscription`/`SubscriptionHandle<TEvent>`, overloaded for both `BasePublicClient` and `BaseSecureClient`. It wraps reconnect/resubscribe semantics that would otherwise need to be built by hand — check its behavior against NFR-6 before adding custom reconnect logic on top.
+⚠️ **Confirmed 2026-08-09 against the shipped `.d.ts`, correcting the note below:** `subscribe()`'s public type surface exposes **no** reconnect/error state (zero hits for reconnect/backoff/retry across the package's types) — the compiled implementation retries internally, but a fully-dead subscription just ends the `for await` iteration with no typed signal. `use-orderbook.ts` therefore supplies its own outer resilience loop: any exit from the iterator is treated as "connection lost," triggering exponential backoff (1s → 15s cap) and a full re-subscribe, which naturally delivers a fresh `"book"` snapshot — this **is** the NFR-6 full-state-resync, not a separate mechanism. `book` is reset to `null` at the start of every attempt so a stale view is never shown across a gap.
 
-✅ **Done when:** book updates stream < 500 ms p95, survive a forced network drop, and resync correctly.
+**Deferred, not done:** `use-user-channel.ts` (Step 3.7, user channel / live fills) is a separate hook, not built yet.
 
-### Step 3.2 — Order book UI
-Bids/asks with depth, spread, last trade. Click-to-fill price into the ticket.
+✅ **Done when:** book updates stream < 500 ms p95, survive a forced network drop, and resync correctly. — *Built and typechecked; the < 500ms p95 and forced-network-drop checks need a manual pass against a live deployment, not yet run.*
 
-✅ **Done when:** the rendered book matches polymarket.com for the same market, side by side.
+### Step 3.2 — Order book UI — ✅ built 2026-08-09
+`src/components/trade/order-book.tsx`. Bids/asks with depth (top 8 levels/side, depth-proportional bar), spread, last trade price, and a connection-status indicator (`StatusDot`, reused from `components/ui/primitives.tsx`). Rendered in `TradingPanel` above the ticket, visible even before the user connects a wallet (it's public data). The live best bid/ask also anchors the market-order slippage guard (`maxPrice`/`minPrice`) when the book is `"live"`, falling back to Gamma's cached snapshot price otherwise — this closes the FR-3.7 gap noted in Step 3.5 below.
+
+**Click-to-fill deferred, deliberately.** This step's original phrasing ("click-to-fill price into the ticket") presumes a price input field, which only exists once limit orders (Step 3.6) land — market orders have no price field to fill. Rows are display-only for now rather than wiring a click handler onto a field that doesn't exist.
+
+✅ **Done when:** the rendered book matches polymarket.com for the same market, side by side. — *Not yet done: needs a manual side-by-side comparison against a live deployment.*
 
 ### Step 3.3 — Fee + balance engine (FR-3.6, C-5)
 `src/lib/polymarket/fees.ts`:
@@ -491,14 +495,16 @@ Went the "explicit action" route, not the auto-on-deposit one originally propose
 ### Step 3.5 — Market orders (FR-3.2) — ✅ SDK calls built (Milestone 1); ✅ UI built 2026-08-07
 `placeMarketBuy`/`placeMarketSell` in `browser-client.ts` call `client.placeMarketOrder({ tokenId, side, amount, builderCode })`. `TradeModal` (`components/trade/trade-modal.tsx`) is the order ticket: connect → check/grant approvals → pick Buy/Sell and an outcome → enter amount → fee breakdown (live `feeBps` from `/api/orders`, never hardcoded client-side) → submit. Still a modal (not embedded inline) but now opens from the market detail page's `OutcomeTradeList` (Step 2.4, built same day) rather than directly from a card tile — cards navigate to the detail page first, matching Polymarket's own browse-then-trade flow.
 
-Slippage protection is a `maxPrice`/`minPrice` computed from Gamma's cached snapshot price ± 5%, **not** a live order-book estimate — FR-3.7's "slippage estimate from live book depth" still needs Step 3.1's WebSocket. Sell isn't checked against actual share holdings (needs the Data API, Milestone 4) — an over-sell is rejected by Polymarket, not caught client-side.
+Slippage protection is a `maxPrice`/`minPrice` computed ± 5% off an anchor price — **updated 2026-08-09**: anchors to the live best ask/bid from Step 3.1's WebSocket when the book is connected (`bookStatus === "live"`), falling back to Gamma's cached snapshot price otherwise, closing FR-3.7's "slippage estimate from live book depth" gap without changing behavior when the book isn't connected. Sell isn't checked against actual share holdings (needs the Data API, Milestone 4) — an over-sell is rejected by Polymarket, not caught client-side.
 
 ✅ **Done when:** a market buy and sell each fill on mainnet, appear in positions, and the ticket shows a slippage estimate before submit. — *UI built and typechecked; a real signed mainnet fill has not yet been confirmed end-to-end.*
 
-### Step 3.6 — Limit orders (FR-3.3) — not started
-SDK supports it (`client.placeLimitOrder(request: PrepareLimitOrderRequest)`, GTC/no-expiry or GTD/`expiration` ≥ `MIN_GTD_EXPIRY_SECONDS`) and `config.ts` already has the GTD expiry constants scaffolded (`MIN_GTD_EXPIRY_SECONDS`, `GTD_EXPIRY_BUFFER_SECONDS`) — nothing calls them yet. Add a `placeLimitBuy`/`placeLimitSell` pair to `browser-client.ts` alongside the existing market-order functions. Price + size + expiry (GTC/GTD). Open-orders panel with cancel — use the SDK's `cancelOrder`/`cancelOrders`/`cancelAll` client-side (no server round-trip needed, consistent with the client-signing architecture; a `DELETE /api/orders` route is not required unless cancellation needs its own pre-flight check). Surface Liquidity Rewards eligibility where applicable (FR-5.1).
+### Step 3.6 — Limit orders (FR-3.3) — ✅ built 2026-08-09
+`placeLimitBuy`/`placeLimitSell` added to `browser-client.ts` alongside the existing market-order functions, same `builderCode()`-embedded-in-signed-struct pattern. Price + size (always shares, unlike a market buy's USD amount) + expiry: GTC by default, or GTD via three presets (1h/1d/1w — deliberately not a free-form date/time picker, keeps this dependency-free) computed by the new pure, tested `computeGtdExpiration` in `config.ts`, which now actually consumes the `MIN_GTD_EXPIRY_SECONDS`/`GTD_EXPIRY_BUFFER_SECONDS` constants that were scaffolded but unused. `fees.ts` gained `limitOrderNotional` (shares × price → base units), the single source of truth for the limit-buy balance check and fee-breakdown display.
 
-✅ **Done when:** a limit order rests in the book, is visible on polymarket.com, and cancels cleanly.
+Open-orders panel (`components/trade/open-orders-panel.tsx`) lists resting orders for the selected outcome and cancels them client-side via `client.cancelOrder({ orderId })` — confirmed a bound `SecureClient` method, no `/actions` import or server round-trip needed, exactly as this step anticipated. **Not done:** bulk cancel-all (`cancelAll`/`cancelOrders` exist on the SDK, not wired to any UI action — not needed for this step's acceptance criterion) and Liquidity Rewards eligibility surfacing (FR-5.1 — needs reward-config data fetching, deferred to Step 4.3 where that data is actually fetched). A `postOnly` checkbox is exposed (guarantees maker-side execution) since it's a single boolean already on the SDK's request type, but it makes no reward-eligibility claim.
+
+✅ **Done when:** a limit order rests in the book, is visible on polymarket.com, and cancels cleanly. — *Built and typechecked; not yet confirmed against a real resting mainnet order (needs the same manual pass as Step 3.5).*
 
 ### Step 3.7 — User WebSocket (FR-4.5)
 `use-user-channel.ts` → `.../ws/user`, L2-authenticated (via the SDK's `subscribe()`, see Step 3.1). Live fills, order status, balance changes. Toast on fill.
@@ -518,25 +524,46 @@ Market and limit orders place, fill, and cancel on mainnet; book streams live wi
 ## 7. Week 4 — Portfolio, Withdrawals & Launch
 **Aug 24–30 · $100 · Dashboard, testing, production**
 
-### Step 4.1 — Data API client
-`src/lib/polymarket/data.ts` against `https://data-api.polymarket.com` — positions, holdings, activity, PnL. Proxy and cache like Gamma.
+### Step 4.1 — Data API client — ✅ built 2026-08-09 (as `portfolio.ts`, browser-side)
+`src/lib/polymarket/portfolio.ts`. **Deviates from this step as originally written on two points, both deliberate:**
 
-✅ **Done when:** typed positions and history for a real wallet.
+1. **Not `data.ts`, and not a cached server proxy.** `ListPositionsRequest` requires a `user` wallet address, and that's the *Deposit Wallet* — which the server never learns (the session carries only the EOA signer, and the installed SDK has no `deriveDepositWalletAddress`; it was in the removed `@polymarket/builder-relayer-client`). A server proxy would need the browser to hand it the address anyway. `SecureClient.listPositions()` defaults `user` to its own account, so this runs browser-side against the user's authenticated client — same pattern as `OpenOrdersPanel`.
+2. **No caching.** Gamma's proxy earns its keep by serving one shared market list to every visitor; positions are per-user and uncacheable, and this step's own acceptance bar ("reconciles against on-chain truth") is something a 30–60s cache would break rather than help.
 
-### Step 4.2 — Portfolio dashboard (FR-4.1–4.4)
-pUSD balance (labeled to explain the USDC relationship), open positions with size / avg entry / current mark, **realized and unrealized PnL**, trade history. Live updates from the user channel.
+`data-api.polymarket.com` was already in the CSP `connect-src` allowlist, so no security-header change was needed. `Position` carries the full PnL dataset (`size`, `avgPrice`, `curPrice`, `initialValue`, `currentValue`, `cashPnl`, `percentPnl`, `realizedPnl`, `redeemable`) — no client-side PnL reconstruction. `summarizePositions` (pure, unit-tested in `portfolio.test.ts`) does the aggregation.
 
-✅ **Done when:** every figure reconciles against on-chain truth and polymarket.com for the same wallet.
+⚠️ **Data API values are human decimals, not 6-decimal base units** — do not pass them through `fees.ts`'s `fromBaseUnits`, which would render every position as ~0. The cash balance (from the CLOB) *is* base units. Both formats are live on the portfolio page at once.
+
+✅ **Done when:** typed positions and history for a real wallet. — *Positions done; activity/history deferred with Step 4.4 below.*
+
+### Step 4.2 — Portfolio dashboard (FR-4.1–4.3) — ✅ built 2026-08-09
+`/portfolio` route + `components/portfolio/{portfolio-view,position-list}.tsx`, linked from the nav bar (took the inert "Dashboards" placeholder's slot). Shows pUSD cash, positions value, unrealized and realized PnL as summary tiles, and a positions table with size / avg entry / current mark / value / PnL. Rows link back to `/market/[slug]` **by `eventSlug`, not `slug`** — the detail route resolves event slugs, so a market slug 404s. Resolved-but-unclaimed positions get a "Resolved" badge; the redeem action itself is not built.
+
+Introduced `hooks/use-browser-client.ts` — the connect/auto-reconnect state machine extracted once a third screen needed it. `TradingPanel` and `DepositWalletPanel` deliberately stay on their own copies for now (their state machines layer in approvals/fees and address/balance respectively); migrating them is a follow-up, kept out of a feature increment so a regression couldn't be ambiguous.
+
+**Not included:** trade history (FR-4.4 — `listActivity` returns a 9-variant discriminated union, its own increment) and live updates (FR-4.5 — needs the Step 3.7 user WebSocket). This is a point-in-time read with a manual refresh button.
+
+✅ **Done when:** every figure reconciles against on-chain truth and polymarket.com for the same wallet. — *Built and typechecked; the side-by-side reconciliation against polymarket.com has not been run yet.*
 
 ### Step 4.3 — Rewards display (FR-5.2, FR-5.3)
 Read `/get-account-rewards`. Show Holding Rewards (4% APY, accrued daily) and liquidity rewards earned. Label the rate as subject to change.
 
 ✅ **Done when:** accrued rewards match the Polymarket UI.
 
-### Step 4.4 — Withdrawals (FR-4.6) ⚠️ **not in the client SRS — do not skip**
-pUSD → USDC → external Polygon address, via Relayer. Address validation, confirmation step, pending/complete states.
+### Step 4.4 — Withdrawals (FR-4.6) ⚠️ **not in the client SRS — do not skip** — ✅ built 2026-08-09
+pUSD → USDC → external Polygon address. **Not via the Relayer as this step assumed** — via **Polymarket's Bridge API**, which the SDK does not wrap. Verified live 2026-08-09:
 
-✅ **Done when:** a real withdrawal completes end-to-end and funds arrive at an external wallet.
+`GET /supported-assets` → `POST /quote` → `POST /withdraw` (returns a one-off bridge address) → **transfer pUSD to that address** with the SDK's `transferErc20` (gasless) → `GET /status/{address}`. Polymarket unwraps pUSD→USDC via their Collateral Offramp and a Uniswap v3 pool; no withdrawal fee, ~27s to arrive.
+
+Two SDK functions look like withdrawal and aren't: `planCollateralReturn`/`executeCollateralReturnPlan` unwinds *positions* into collateral, and `withdrawFromPerps` is the perps account on a different host.
+
+🚩 **The docs' prose misidentifies the pUSD address as USDC** — that error is why `POLYGON_TOKENS` in `config.ts` is verified against the live asset list rather than copied from a doc page, and why `assertBridgeAssetsUnchanged()` re-checks before every withdrawal and refuses on drift. See CLAUDE.md's Traps section.
+
+**Scope:** destination fixed to **USDC on Polygon**. The bridge supports 13 chains / 200+ tokens, but a chain picker is the worst possible footgun in an irreversible flow — deferred as a later UI change on the same plumbing. Withdrawal *history* is also deferred (the `/status` endpoint gives current state only; full history rides with the FR-4.4 activity feed).
+
+Safety: `validateWithdrawal` (pure, 10 unit tests) checks amount parse → address validity → $2 minimum → balance, in that order; an unskippable confirm step shows the real quote, estimated USDC received, fees, arrival time, and the **untruncated** recipient address before anything is signed. `bridge.polymarket.com` added to the CSP `connect-src` in the same change.
+
+✅ **Done when:** a real withdrawal completes end-to-end and funds arrive at an external wallet. — *Built and typechecked; `POST /withdraw` and the transfer leg have NOT been exercised against mainnet yet (`/supported-assets` and `/quote` were verified live). Needs a real small-value withdrawal to confirm.*
 
 ### Step 4.5 — Testing
 - **Unit:** fee math, implied probability, geoblock tier logic, order construction

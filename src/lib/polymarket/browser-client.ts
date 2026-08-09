@@ -33,6 +33,40 @@ import { BUILDER_CODE } from "@/lib/auth/public-config";
 /** Never `undefined` in practice — the panel guards on `isTradingConfigured`. */
 export type BrowserClient = SecureClient;
 
+const DEPLOYED_KEY_PREFIX = "polymarket:wallet-deployed:";
+
+/**
+ * Caches "this EOA's Deposit Wallet is deployed," observed directly rather
+ * than predicted — the SDK has no pre-auth way to check deployment without
+ * already knowing the Deposit Wallet's address, and the only function that
+ * used to derive it (`deriveDepositWalletAddress`) doesn't exist in the
+ * current `@polymarket/client` (it was part of the removed
+ * `@polymarket/builder-relayer-client`). So instead of predicting, we
+ * remember: the moment `createBrowserClient` succeeds we know for a fact the
+ * wallet exists, and cache that so a later mount (reload, or a different
+ * market's page) can auto-reconnect without re-risking a deploy on render.
+ *
+ * `localStorage`, not `sessionStorage` — deployment is permanent and
+ * on-chain, so this never needs to expire. Wrapped in try/catch because
+ * private-browsing/storage-disabled environments must fail closed to "no
+ * cache" (falls back to the manual connect button), never throw.
+ */
+export function hasDeployedWalletCached(eoaAddress: string): boolean {
+  try {
+    return window.localStorage.getItem(DEPLOYED_KEY_PREFIX + eoaAddress.toLowerCase()) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function markWalletDeployedCached(eoaAddress: string): void {
+  try {
+    window.localStorage.setItem(DEPLOYED_KEY_PREFIX + eoaAddress.toLowerCase(), "true");
+  } catch {
+    // Best effort — a failed write just means the next visit shows the manual button again.
+  }
+}
+
 /**
  * Builds an authenticated client from a Privy embedded wallet.
  *
@@ -170,6 +204,84 @@ export async function placeMarketSell(
     builderCode: builderCode(),
     ...(params.minPrice ? { minPrice: params.minPrice } : {}),
   });
+}
+
+export type LimitOrderParams = {
+  tokenId: string;
+  /** Per-share limit price, 0 < p < 1. */
+  price: string;
+  /** Order size in shares — always shares, unlike a market buy's USD amount. */
+  size: string;
+  /** Unix seconds. Omit for GTC; set for GTD (must be ≥3 minutes out — see `computeGtdExpiration`). */
+  expiration?: number;
+  /** Guarantees maker-side execution; rejected if it would cross the book immediately. */
+  postOnly?: boolean;
+};
+
+/** Places a GTC/GTD limit buy, signed by the user's own wallet. See `placeMarketBuy` for the attribution/signing model — identical here. */
+export async function placeLimitBuy(client: BrowserClient, params: LimitOrderParams) {
+  const { OrderSide } = await import("@polymarket/client");
+  return client.placeLimitOrder({
+    tokenId: params.tokenId,
+    side: OrderSide.BUY,
+    price: params.price,
+    size: params.size,
+    builderCode: builderCode(),
+    ...(params.expiration ? { expiration: params.expiration } : {}),
+    ...(params.postOnly ? { postOnly: params.postOnly } : {}),
+  });
+}
+
+export async function placeLimitSell(client: BrowserClient, params: LimitOrderParams) {
+  const { OrderSide } = await import("@polymarket/client");
+  return client.placeLimitOrder({
+    tokenId: params.tokenId,
+    side: OrderSide.SELL,
+    price: params.price,
+    size: params.size,
+    builderCode: builderCode(),
+    ...(params.expiration ? { expiration: params.expiration } : {}),
+    ...(params.postOnly ? { postOnly: params.postOnly } : {}),
+  });
+}
+
+/** Resting orders for one outcome — first page only. Hundreds of open orders on a single outcome isn't a real scenario worth building pagination for yet. */
+export async function listOpenOrdersForToken(client: BrowserClient, tokenId: string) {
+  const { items } = await client.listOpenOrders({ tokenId }).firstPage();
+  return items;
+}
+
+/** Cancels one resting order. No server round-trip — cancellation needs no pre-flight check, consistent with the client-signing architecture. */
+export async function cancelOpenOrder(client: BrowserClient, orderId: string): Promise<void> {
+  await client.cancelOrder({ orderId });
+}
+
+/**
+ * Moves pUSD out of the Deposit Wallet (FR-4.6). Gasless via the Relayer.
+ *
+ * ⚠️ **Irreversible.** Callers must validate the amount and destination
+ * *before* calling this — see `validateWithdrawal` in `withdraw.ts`, and note
+ * that the withdrawal flow sends to a one-off bridge address from
+ * `createWithdrawAddress`, not to the user's own address directly.
+ *
+ * The token is our own verified `POLYGON_TOKENS.pUSD` constant rather than
+ * the SDK's `client.environment.contracts.collateralToken`: the SDK's own
+ * JSDoc example uses that path, but its published `EnvironmentConfig` type is
+ * only `{ name, chainId }`, so `contracts` isn't on the typed surface and
+ * reading it would need an unchecked cast on the one call that moves money.
+ */
+export async function transferCollateral(
+  client: BrowserClient,
+  params: { to: string; amountBaseUnit: bigint },
+): Promise<string> {
+  const { POLYGON_TOKENS } = await import("./config");
+  const handle = await client.transferErc20({
+    amount: params.amountBaseUnit,
+    recipientAddress: params.to,
+    tokenAddress: POLYGON_TOKENS.pUSD,
+  });
+  const outcome = await handle.wait();
+  return outcome.transactionHash;
 }
 
 export type PreflightResult =

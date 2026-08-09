@@ -66,6 +66,10 @@ const CSP_DIRECTIVES: Record<string, string[]> = {
     "https://data-api.polymarket.com",
     "https://relayer-v2.polymarket.com",
     "https://polymarket.com",
+    // Withdrawal bridge (FR-4.6) — BRIDGE_ENDPOINT in config.ts. Added with
+    // the withdrawal flow: omitting it would not fail today (the policy is
+    // report-only) but would break withdrawals the moment CSP_ENFORCE flips.
+    "https://bridge.polymarket.com",
     // Polymarket WSS — POLYMARKET_WS. Not used until Milestone 3, but listed
     // now so the order book does not arrive blocked by a policy nobody links
     // to the failure.

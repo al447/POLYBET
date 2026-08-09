@@ -110,6 +110,29 @@ export function checkBalance(params: {
   };
 }
 
+/**
+ * Notional for a limit order: shares × price. Unlike a market buy (whose
+ * "amount" is already USD notional), a limit order's `size` is always
+ * shares — this is the single place that turns shares+price into the base
+ * -unit notional both the balance check and the fee-breakdown display need,
+ * so the two can't drift apart.
+ *
+ * Float-multiplied then truncated to 6 decimals — approximate, same spirit
+ * as the rest of the client-side pre-trade check: advisory, not the
+ * authoritative fill price.
+ */
+export function limitOrderNotional(size: string, price: string): bigint {
+  const sizeNum = Number(size);
+  const priceNum = Number(price);
+  if (!Number.isFinite(sizeNum) || sizeNum <= 0) {
+    throw new Error(`Invalid size: ${size}`);
+  }
+  if (!Number.isFinite(priceNum) || priceNum <= 0) {
+    throw new Error(`Invalid price: ${price}`);
+  }
+  return toBaseUnits((sizeNum * priceNum).toFixed(COLLATERAL.decimals));
+}
+
 /** Validates a configured fee rate against Polymarket's caps. */
 export function assertValidBps(bps: number, side: "taker" | "maker" = "taker"): void {
   if (!Number.isInteger(bps) || bps < 0) {

@@ -2,13 +2,13 @@
 
 Working context for the Polymarket Integration Platform. **Keep this file current** — see [Maintenance Protocol](#maintenance-protocol) at the bottom.
 
-> **Last updated:** 2026-08-07 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
+> **Last updated:** 2026-08-09 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
 >
-> **Deploy status:** first deploy **attempted and rejected 2026-08-05** — the client's Cloudflare account is on **Workers Free** and the upload failed with `exceeded the size limit of 3 MiB [code: 10027]`. **Corrected 2026-08-05:** the account is not literally empty — an empty `polymarket-integration-platform` Worker *service* shell exists in the dashboard (name reserved, no code, no bindings, no versions, 0 invocations), visible at Workers & Pages but absent from the `GET /workers/scripts` API and `wrangler deployments list`. This is expected and harmless — see [deployment.md §2.1](deployment.md#21-authenticate).
+> **Deploy status — updated 2026-08-09.** First deploy **attempted and rejected 2026-08-05** — the client's Cloudflare account was on **Workers Free** and the upload failed with `exceeded the size limit of 3 MiB [code: 10027]`. **Resolved 2026-08-09: the client upgraded to Workers Paid, and a deploy has now succeeded** on the default `*.workers.dev` subdomain. All six request-time secrets are pushed (`wrangler secret put` — the four `POLYMARKET_BUILDER_*`, `PRIVY_APP_SECRET`, `POLYGON_RPC_URL`), and both build-time vars (`NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_POLYMARKET_BUILDER_CODE`) were exported before this build — so the deployed instance should be running in **live mode** with login and builder attribution both wired, not mock mode. **Not yet done:** the custom domain is not wired (still on `*.workers.dev`, not `POLYBETS.XYZ`), and none of [deployment.md §5](deployment.md#5-post-deploy-verification)'s 9 post-deploy checks (signing spike, health, geoblock, security headers, login end-to-end, etc.) have actually been run or recorded against this deployment — the config being in place is not the same as confirming it works. Run §5 before treating this as verified.
 >
-> - **P-7** — *half done.* Account authenticated (`Polybet365@gmail.com's Account`, token in `.env.cloudflare`), R2 bucket `polymarket-platform-cache` created. **Blocked on the client upgrading to Workers Paid ($5/mo).**
+> - **P-7 — resolved 2026-08-09.** Workers Paid active, first deploy succeeded, secrets pushed, build-time vars set. Remaining: wire custom domain, run §5 verification.
 > - **P-8 (domain) — updated 2026-08-07.** Production domain is **`POLYBETS.XYZ`**, client states it's already pointed at Cloudflare. **Not yet independently verified** — no Cloudflare zone/DNS check has been run from this environment. Confirm zone delegation is active before wiring `wrangler.jsonc` custom-domain routes or relying on it for the Verified-tier application's live-demo URL.
-> - **P-9** (`POLYGON_RPC_URL`, still empty) — unchanged.
+> - **P-9 — resolved 2026-08-09.** `POLYGON_RPC_URL` pushed as part of the same secrets batch.
 >
 > Everything not requiring client access is done and verified on local workerd. See [deployment.md](deployment.md).
 
@@ -20,6 +20,7 @@ src/
   app/
     restricted/            geoblocked landing
     market/[slug]/         market detail page, keyed by EVENT slug (Step 2.4, built 2026-08-07)
+    portfolio/             positions + PnL (Steps 4.1-4.2, built 2026-08-09) — browser-side reads, no server fetch
     api/health             secret presence + builder readiness
     api/geoblock           per-request geo tier (never cached)
     api/auth/me            server-verified session (FR-1.1)
@@ -34,12 +35,21 @@ src/
     polymarket/gamma-types.ts                   types + parsing, NOT server-only (client-safe)
     polymarket/{config,fees,builder,gamma}.ts   clob.ts removed 2026-08-07, was dead code
     polymarket/browser-client.ts                client-side signing, balance/approvals (market orders; limit orders pending)
+    polymarket/market-data.ts                   unauthenticated public client + order-book WS reducer (Step 3.1, built 2026-08-09)
+    polymarket/portfolio.ts                     browser-side Data API positions + pure PnL aggregation (Steps 4.1-4.2, built 2026-08-09) — NOT a cached server proxy, see its docstring
+    polymarket/withdraw.ts                      Bridge API client + pure validateWithdrawal (FR-4.6, built 2026-08-09) — SDK does NOT wrap this API
+  hooks/
+    use-orderbook.ts         live order book, reconnect + full resync on reopen (Step 3.1, built 2026-08-09); use-user-channel.ts (Step 3.7) not yet built
+    use-browser-client.ts    shared connect/auto-reconnect state machine (built 2026-08-09); portfolio uses it, trading-panel + deposit-wallet-panel still on their own copies
   components/
     auth/, wallet/, geo/, layout/{nav-bar,nav-search,right-sidebar,privy-auth-area}, ui/{primitives,icons}
     markets/{market-card,market-grid,discovery-section}   Milestone 2, live — cards link to /market/[slug], don't trade inline
     markets/{outcome-list,market-trading-section}         detail-page layout: outcome list + sticky panel, matches Polymarket's own event-page pattern (built 2026-08-07)
-    trade/trading-panel.tsx                               sticky order ticket (market orders only), Milestone 3 — not yet confirmed against a real mainnet fill
-    portfolio/                                            not yet created — Milestone 4
+    trade/trading-panel.tsx                               sticky order ticket, market + limit (Step 3.6, built 2026-08-09), Milestone 3 — not yet confirmed against a real mainnet fill
+    trade/order-book.tsx                                  live bid/ask depth (Step 3.2, built 2026-08-09), also anchors the trading-panel slippage guard when live; also feeds the limit-price prefill on toggle
+    trade/open-orders-panel.tsx                           resting limit orders for the selected outcome + per-order cancel (Step 3.6, built 2026-08-09); no bulk cancel-all yet
+    portfolio/{portfolio-view,position-list}.tsx          positions + PnL dashboard (Steps 4.1-4.2, built 2026-08-09); trade history/rewards/live updates still pending
+    portfolio/withdraw-panel.tsx                          pUSD → USDC withdrawal to an external Polygon address (FR-4.6, built 2026-08-09) — irreversible, gated behind an unskippable confirm step
 scripts/
   check-client-bundle.mjs  CI leak guard
   provision-builder.mjs    P-1..P-5 provisioning + handover
@@ -265,7 +275,17 @@ This is a **correctness win, not a nuisance** — the runtime really does return
 
 Polymarket rejects blocked orders server-side regardless; our check exists so users get real feedback instead of opaque failures.
 
-**Withdrawals were never in the client SRS.** Added as FR-4.6. Deposit-only is not shippable.
+**Withdrawals were never in the client SRS.** Added as FR-4.6. Deposit-only is not shippable. **Built 2026-08-09** — see the next two entries for what the research turned up.
+
+**🚩 Withdrawals go through the Bridge API, which the SDK does NOT wrap.** Verified live 2026-08-09. `https://bridge.polymarket.com`: `GET /supported-assets` → `POST /quote` → `POST /withdraw` (returns a one-off bridge address) → **transfer pUSD to that address** via the SDK's `transferErc20` → `GET /status/{address}`. Polymarket unwraps pUSD→USDC through their Collateral Offramp + a Uniswap v3 pool; we never touch those contracts, and they charge no withdrawal fee (the quote's cost is gas + swap impact, ~$0.0006 on a $10 test quote, ~27s to arrive).
+
+Two wrong turns to avoid: `planCollateralReturn`/`executeCollateralReturnPlan` is **not** withdrawal — it unwinds *positions* into collateral. And `withdrawFromPerps` is a different endpoint on a different host (`api.perpetuals.polymarket.com`) for the perps account.
+
+**🚩 The Polymarket docs misidentify the pUSD address as USDC — verify token addresses against the live API, never the docs prose.** The bridge docs state *"For a USDC withdrawal to Polygon, you would reference the Polygon USDC address … `0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB`"*. That address is **pUSD**. Using it as `toTokenAddress` makes a "withdraw to USDC" a pUSD→pUSD round trip. Verified against `bridge.polymarket.com/supported-assets` on 2026-08-09 (chainId `137`): pUSD `0xC011a7E1…82DFB`, native USDC `0x3c499c54…5c3359`, USDC.e `0x2791Bca1…a84174`, all 6 decimals, `minCheckoutUsd` $2.
+
+Both live in `POLYGON_TOKENS` (`lib/polymarket/config.ts`), and `withdraw.ts`'s `assertBridgeAssetsUnchanged()` re-checks them against the live list before every withdrawal and **refuses** on drift. That check is deliberate belt-and-braces on the one code path where a stale constant costs real money — don't remove it as redundant.
+
+**The SDK's own `transferErc20` example doesn't typecheck.** Its JSDoc reads `client.environment.contracts.collateralToken`, but the published `EnvironmentConfig` type is only `{ name: string; chainId: number }` — `contracts` appears solely on `EnvironmentConfigFork`. Reading it needs an unchecked cast, which is not something to do on the call that moves money, hence the verified constant above instead.
 
 **🚩 Server-side signing needs BOTH user delegation AND a Privy authorization key — neither exists yet.** Hit 2026-08-04. With auth working and builder credentials wired, `/api/wallet/status` still fails:
 

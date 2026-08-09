@@ -7,7 +7,11 @@ import Image from "next/image";
 import {
   createBrowserClient,
   enableTradingApprovals,
+  hasDeployedWalletCached,
   hasTradingApprovals,
+  markWalletDeployedCached,
+  placeLimitBuy,
+  placeLimitSell,
   placeMarketBuy,
   placeMarketSell,
   preflightOrder,
@@ -16,23 +20,32 @@ import {
 import type { BrowserClient } from "@/lib/polymarket/browser-client";
 import { outcomeTokens, outcomePriceFractions } from "@/lib/polymarket/gamma-types";
 import type { GammaMarket, OutcomeToken } from "@/lib/polymarket/gamma-types";
-import { calculateFeeBreakdown, checkBalance, fromBaseUnits, toBaseUnits } from "@/lib/polymarket/fees";
+import { calculateFeeBreakdown, checkBalance, fromBaseUnits, limitOrderNotional, toBaseUnits } from "@/lib/polymarket/fees";
+import { computeGtdExpiration, type GtdDuration } from "@/lib/polymarket/config";
+import { useOrderBook } from "@/hooks/use-orderbook";
+import { OrderBook } from "@/components/trade/order-book";
+import { OpenOrdersPanel } from "@/components/trade/open-orders-panel";
 
 /**
- * Sticky order ticket (FR-3.1, FR-3.2, FR-3.6) — market orders only. Limit
- * orders and the live order-book WebSocket are separate, not-yet-built steps
- * (implementation.md Steps 3.1, 3.6): prices shown here are Gamma's cached
- * snapshot, not a live book. Lives on the market detail page next to
- * `OutcomeList` (replaced the modal-per-card design 2026-08-07 to match
- * Polymarket's own browse-then-trade layout).
+ * Sticky order ticket (FR-3.1, FR-3.2, FR-3.6, FR-3.3) — market and limit
+ * orders. The live order book (Step 3.1/3.2, `useOrderBook`/`OrderBook`,
+ * built 2026-08-09) anchors the market-order slippage guard when it's live;
+ * the "Snapshot price" text shown to the user is still Gamma's cached price
+ * on purpose — that copy is about what price the order was *quoted* at, not
+ * what it's actually guarded against. Limit orders (Step 3.6, built
+ * 2026-08-09) rest via `placeLimitBuy`/`placeLimitSell`, GTC by default or
+ * GTD via `computeGtdExpiration`; `OpenOrdersPanel` below the ticket shows
+ * and cancels whatever's resting for the selected outcome. Lives on the
+ * market detail page next to `OutcomeList` (replaced the modal-per-card
+ * design 2026-08-07 to match Polymarket's own browse-then-trade layout).
  *
  * Splits state into two pieces deliberately:
  *   - `connection` (wallet client, balance, approvals, fee rate) persists
  *     across outcome switches — clicking a different row must NOT force a
  *     reconnect or re-prompt a wallet signature.
- *   - the ticket itself (side, amount, submission) resets whenever `market`
- *     changes, via the effect below, since "amount to buy" for one outcome
- *     has no business carrying over to a different one.
+ *   - the ticket itself (side, amount, order type, submission) resets
+ *     whenever `market` changes, via the effect below, since "amount to
+ *     buy" for one outcome has no business carrying over to a different one.
  *
  * Every step that costs relay quota or asks for a wallet signature —
  * connecting, granting trading approvals, submitting — is gated behind an
@@ -45,8 +58,16 @@ import { calculateFeeBreakdown, checkBalance, fromBaseUnits, toBaseUnits } from 
 
 const SLIPPAGE = 0.05;
 const QUICK_AMOUNTS = ["1", "5", "10", "100"];
+const EXPIRY_OPTIONS: readonly { value: Expiry; label: string }[] = [
+  { value: "gtc", label: "GTC" },
+  { value: "1h", label: "1h" },
+  { value: "1d", label: "1d" },
+  { value: "1w", label: "1w" },
+];
 
 type Side = "BUY" | "SELL";
+type OrderType = "market" | "limit";
+type Expiry = "gtc" | GtdDuration;
 
 type Connection =
   | { state: "connect" }
@@ -80,12 +101,19 @@ export function TradingPanel({
   const [selectedOutcome, setSelectedOutcome] = useState(outcomeIndex);
   const [side, setSide] = useState<Side>("BUY");
   const [amount, setAmount] = useState("");
+  const [orderType, setOrderType] = useState<OrderType>("market");
+  const [limitPrice, setLimitPrice] = useState("");
+  const [expiry, setExpiry] = useState<Expiry>("gtc");
   const [submission, setSubmission] = useState<Submission>({ state: "idle" });
+  const [refreshOrdersToken, setRefreshOrdersToken] = useState(0);
 
   useEffect(() => {
     setSelectedOutcome(outcomeIndex);
     setSide("BUY");
     setAmount("");
+    setOrderType("market");
+    setLimitPrice("");
+    setExpiry("gtc");
     setSubmission({ state: "idle" });
   }, [market.id, outcomeIndex]);
 
@@ -93,6 +121,53 @@ export function TradingPanel({
   const prices = outcomePriceFractions(market);
   const price = prices[selectedOutcome];
   const validPrice = Number.isFinite(price) ? price : null;
+
+  const { book, status: bookStatus } = useOrderBook(outcome?.tokenId);
+  // Anchor the slippage guard to the live best ask/bid when the book is
+  // actually live; otherwise fall back to exactly today's behavior (Gamma's
+  // cached snapshot). Never worse than before, strictly fresher when the WS
+  // is connected — never trust `book` while it isn't "live" (NFR-6: a stale
+  // book after a silent disconnect is how users get filled unexpectedly).
+  const liveAsk = bookStatus === "live" ? book?.asks[0]?.price : undefined;
+  const liveBid = bookStatus === "live" ? book?.bids[0]?.price : undefined;
+  const buyAnchor: number | null = liveAsk ?? validPrice;
+  const sellAnchor: number | null = liveBid ?? validPrice;
+
+  /**
+   * Single source of truth for "how much collateral does a BUY need" —
+   * shared by the balance check in `submit` and the fee-breakdown display,
+   * so the two can never disagree. Market buy: `amount` already is USD
+   * notional. Limit buy: `amount` is shares, so notional is shares × price.
+   */
+  const notionalBaseUnits: bigint | null = (() => {
+    if (side !== "BUY" || !amount) return null;
+    try {
+      return orderType === "market"
+        ? toBaseUnits(amount)
+        : limitPrice
+          ? limitOrderNotional(amount, limitPrice)
+          : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  /**
+   * Switching to Limit prefills the price from the live book/snapshot
+   * anchor (if the field is still empty) — a lightweight, toggle-time
+   * version of click-to-fill; per-row click-to-fill on the book itself is
+   * still deferred.
+   */
+  const handleOrderTypeChange = useCallback(
+    (next: OrderType) => {
+      setOrderType(next);
+      if (next === "limit" && !limitPrice) {
+        const anchor = side === "BUY" ? buyAnchor : sellAnchor;
+        if (anchor !== null) setLimitPrice(clampPrice(anchor).toFixed(3));
+      }
+    },
+    [limitPrice, side, buyAnchor, sellAnchor],
+  );
 
   /**
    * `feeBps` is read from the server (never guessed client-side — a
@@ -124,6 +199,9 @@ export function TradingPanel({
     try {
       const provider = await embedded.getEthereumProvider();
       const client = await createBrowserClient(provider as never, embedded.address);
+      // Reaching here proves the Deposit Wallet exists (deployed just now, or
+      // already existed) — cache it so a future mount can skip this button.
+      markWalletDeployedCached(embedded.address);
       setConnection({ state: "preparing" });
 
       const [balance, approved] = await Promise.all([
@@ -145,6 +223,26 @@ export function TradingPanel({
     }
   }, [wallets, enterReady]);
 
+  /**
+   * Auto-reconnect on return visits (reload, or navigating to a different
+   * market's page — both remount this component from scratch). Gated on
+   * `connection.state === "connect"` so it fires at most once per mount and
+   * never after an explicit error (no silent retry loop), and on the
+   * localStorage cache so it only ever calls `connect()` for a wallet we've
+   * personally observed succeed before — never risks an unprompted deploy
+   * for a genuinely new wallet, which still gets the manual button.
+   */
+  useEffect(() => {
+    if (connection.state !== "connect" || !ready || !authenticated) return;
+    const embedded = wallets.find((w) => w.walletClientType === "privy");
+    if (!embedded || !hasDeployedWalletCached(embedded.address)) return;
+
+    async function attemptAutoConnect() {
+      await connect();
+    }
+    void attemptAutoConnect();
+  }, [connection.state, ready, authenticated, wallets, connect]);
+
   const approve = useCallback(async () => {
     if (connection.state !== "needs-approval") return;
     const { client, balance } = connection;
@@ -165,19 +263,23 @@ export function TradingPanel({
     if (connection.state !== "ready" || !outcome) return;
     const { client, balance, feeBps } = connection;
 
+    if (orderType === "limit") {
+      const priceNum = Number(limitPrice);
+      if (!limitPrice || !Number.isFinite(priceNum) || priceNum <= 0 || priceNum >= 1) {
+        setSubmission({ state: "error", message: "Enter a limit price between 0 and 1." });
+        return;
+      }
+    }
+
     if (side === "BUY") {
-      let notional: bigint;
-      try {
-        notional = toBaseUnits(amount || "0");
-      } catch {
-        setSubmission({ state: "error", message: "Enter a valid amount." });
+      if (notionalBaseUnits === null || notionalBaseUnits <= 0n) {
+        setSubmission({
+          state: "error",
+          message: orderType === "market" ? "Enter an amount greater than zero." : "Enter a valid price and share amount.",
+        });
         return;
       }
-      if (notional <= 0n) {
-        setSubmission({ state: "error", message: "Enter an amount greater than zero." });
-        return;
-      }
-      const check = checkBalance({ balance, notional, builderFeeBps: feeBps });
+      const check = checkBalance({ balance, notional: notionalBaseUnits, builderFeeBps: feeBps });
       if (!check.ok) {
         setSubmission({ state: "error", message: check.reason });
         return;
@@ -189,24 +291,45 @@ export function TradingPanel({
 
     setSubmission({ state: "submitting" });
     try {
-      const preflight = await preflightOrder({ tokenId: outcome.tokenId, side, amount });
+      const preflight = await preflightOrder({
+        tokenId: outcome.tokenId,
+        side,
+        amount,
+        ...(orderType === "limit" ? { limitPrice } : {}),
+      });
       if (!preflight.allowed) {
         setSubmission({ state: "error", message: preflight.message });
         return;
       }
 
+      const expiration = orderType === "limit" && expiry !== "gtc" ? computeGtdExpiration(expiry, Math.floor(Date.now() / 1000)) : undefined;
+
       const response =
-        side === "BUY"
-          ? await placeMarketBuy(client, {
-              tokenId: outcome.tokenId,
-              amount,
-              ...(validPrice !== null ? { maxPrice: clampPrice(validPrice * (1 + SLIPPAGE)).toFixed(3) } : {}),
-            })
-          : await placeMarketSell(client, {
-              tokenId: outcome.tokenId,
-              shares: amount,
-              ...(validPrice !== null ? { minPrice: clampPrice(validPrice * (1 - SLIPPAGE)).toFixed(3) } : {}),
-            });
+        orderType === "market"
+          ? side === "BUY"
+            ? await placeMarketBuy(client, {
+                tokenId: outcome.tokenId,
+                amount,
+                ...(buyAnchor !== null ? { maxPrice: clampPrice(buyAnchor * (1 + SLIPPAGE)).toFixed(3) } : {}),
+              })
+            : await placeMarketSell(client, {
+                tokenId: outcome.tokenId,
+                shares: amount,
+                ...(sellAnchor !== null ? { minPrice: clampPrice(sellAnchor * (1 - SLIPPAGE)).toFixed(3) } : {}),
+              })
+          : side === "BUY"
+            ? await placeLimitBuy(client, {
+                tokenId: outcome.tokenId,
+                price: limitPrice,
+                size: amount,
+                ...(expiration ? { expiration } : {}),
+              })
+            : await placeLimitSell(client, {
+                tokenId: outcome.tokenId,
+                price: limitPrice,
+                size: amount,
+                ...(expiration ? { expiration } : {}),
+              });
 
       if (!response.ok) {
         setSubmission({ state: "error", message: response.message });
@@ -220,10 +343,11 @@ export function TradingPanel({
         makingAmount: response.makingAmount,
         takingAmount: response.takingAmount,
       });
+      if (orderType === "limit") setRefreshOrdersToken((token) => token + 1);
     } catch (error) {
       setSubmission({ state: "error", message: error instanceof Error ? error.message : "order_failed" });
     }
-  }, [connection, outcome, side, amount, validPrice]);
+  }, [connection, outcome, side, amount, buyAnchor, sellAnchor, orderType, limitPrice, expiry, notionalBaseUnits]);
 
   return (
     <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-6">
@@ -256,6 +380,12 @@ export function TradingPanel({
         </div>
       </div>
 
+      {outcome ? (
+        <div className="mb-5">
+          <OrderBook book={book} status={bookStatus} outcomeLabel={outcome.label} />
+        </div>
+      ) : null}
+
       {!ready || !authenticated ? (
         <SignInStep ready={ready} onLogin={login} />
       ) : outcomes.length === 0 ? (
@@ -271,21 +401,40 @@ export function TradingPanel({
       ) : connection.state === "error" ? (
         <ErrorBox message={connection.message} onRetry={() => setConnection(connection.fallback)} />
       ) : (
-        <TicketBody
-          feeBps={connection.feeBps}
-          outcomes={outcomes}
-          prices={prices}
-          selectedOutcome={selectedOutcome}
-          onSelectOutcome={setSelectedOutcome}
-          side={side}
-          onSideChange={setSide}
-          amount={amount}
-          onAmountChange={setAmount}
-          price={validPrice}
-          submission={submission}
-          onSubmit={submit}
-          onRetrySubmission={() => setSubmission({ state: "idle" })}
-        />
+        <>
+          <TicketBody
+            feeBps={connection.feeBps}
+            outcomes={outcomes}
+            prices={prices}
+            selectedOutcome={selectedOutcome}
+            onSelectOutcome={setSelectedOutcome}
+            side={side}
+            onSideChange={setSide}
+            amount={amount}
+            onAmountChange={setAmount}
+            price={validPrice}
+            orderType={orderType}
+            onOrderTypeChange={handleOrderTypeChange}
+            limitPrice={limitPrice}
+            onLimitPriceChange={setLimitPrice}
+            expiry={expiry}
+            onExpiryChange={setExpiry}
+            notional={notionalBaseUnits}
+            submission={submission}
+            onSubmit={submit}
+            onRetrySubmission={() => setSubmission({ state: "idle" })}
+          />
+          {outcome ? (
+            <div className="mt-5">
+              <OpenOrdersPanel
+                key={refreshOrdersToken}
+                client={connection.client}
+                tokenId={outcome.tokenId}
+                outcomeLabel={outcome.label}
+              />
+            </div>
+          ) : null}
+        </>
       )}
     </div>
   );
@@ -371,6 +520,13 @@ function TicketBody({
   amount,
   onAmountChange,
   price,
+  orderType,
+  onOrderTypeChange,
+  limitPrice,
+  onLimitPriceChange,
+  expiry,
+  onExpiryChange,
+  notional,
   submission,
   onSubmit,
   onRetrySubmission,
@@ -385,6 +541,13 @@ function TicketBody({
   amount: string;
   onAmountChange: (value: string) => void;
   price: number | null;
+  orderType: OrderType;
+  onOrderTypeChange: (type: OrderType) => void;
+  limitPrice: string;
+  onLimitPriceChange: (value: string) => void;
+  expiry: Expiry;
+  onExpiryChange: (value: Expiry) => void;
+  notional: bigint | null;
   submission: Submission;
   onSubmit: () => void;
   onRetrySubmission: () => void;
@@ -404,14 +567,9 @@ function TicketBody({
   }
 
   const submitting = submission.state === "submitting";
-  const breakdown = (() => {
-    if (side !== "BUY" || !amount) return null;
-    try {
-      return calculateFeeBreakdown({ notional: toBaseUnits(amount), builderFeeBps: feeBps });
-    } catch {
-      return null;
-    }
-  })();
+  const breakdown = notional !== null ? calculateFeeBreakdown({ notional, builderFeeBps: feeBps }) : null;
+  const amountLabel =
+    orderType === "market" && side === "BUY" ? "Amount to spend (USD)" : `Shares to ${side === "BUY" ? "buy" : "sell"}`;
 
   return (
     <div>
@@ -431,12 +589,21 @@ function TicketBody({
             </button>
           ))}
         </div>
-        <span
-          className="rounded-lg border border-zinc-800 px-3 py-1.5 text-sm font-medium text-zinc-400"
-          title="Limit orders aren't built yet — market orders only"
-        >
-          Market
-        </span>
+        <div className="flex overflow-hidden rounded-lg border border-zinc-800 text-sm font-medium">
+          {(["market", "limit"] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => onOrderTypeChange(t)}
+              disabled={submitting}
+              className={`px-3 py-1.5 transition ${
+                orderType === t ? "bg-zinc-800 text-zinc-100" : "text-zinc-400 hover:text-zinc-200"
+              }`}
+            >
+              {t === "market" ? "Market" : "Limit"}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="mb-5 flex gap-3">
@@ -464,20 +631,33 @@ function TicketBody({
         })}
       </div>
 
-      <label className="mb-2 block text-sm font-medium text-zinc-400">
-        {side === "BUY" ? "Amount to spend (USD)" : "Shares to sell"}
-      </label>
+      {orderType === "limit" ? (
+        <>
+          <label className="mb-2 block text-sm font-medium text-zinc-400">Limit price</label>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={limitPrice}
+            onChange={(event) => onLimitPriceChange(event.target.value)}
+            disabled={submitting}
+            placeholder="0.50"
+            className="mb-3 w-full rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3 text-lg font-bold text-zinc-100 tabular-nums placeholder:text-zinc-700 focus:border-zinc-600 focus:outline-none"
+          />
+        </>
+      ) : null}
+
+      <label className="mb-2 block text-sm font-medium text-zinc-400">{amountLabel}</label>
       <input
         type="text"
         inputMode="decimal"
         value={amount}
         onChange={(event) => onAmountChange(event.target.value)}
         disabled={submitting}
-        placeholder="$0"
+        placeholder={orderType === "market" && side === "BUY" ? "$0" : "0"}
         className="w-full rounded-xl border border-zinc-800 bg-zinc-900/60 px-4 py-3.5 text-2xl font-bold text-zinc-100 tabular-nums placeholder:text-zinc-700 focus:border-zinc-600 focus:outline-none"
       />
 
-      {side === "BUY" ? (
+      {orderType === "market" && side === "BUY" ? (
         <div className="mt-3 flex gap-2">
           {QUICK_AMOUNTS.map((q) => (
             <button
@@ -493,11 +673,36 @@ function TicketBody({
         </div>
       ) : null}
 
-      {price !== null ? (
+      {orderType === "limit" ? (
+        <div className="mt-3 flex gap-2">
+          {EXPIRY_OPTIONS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onExpiryChange(option.value)}
+              disabled={submitting}
+              className={`flex-1 rounded-lg border py-2 text-sm font-semibold transition ${
+                expiry === option.value
+                  ? "border-zinc-600 bg-zinc-800 text-zinc-100"
+                  : "border-zinc-800 bg-zinc-900/40 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {orderType === "market" && price !== null ? (
         <p className="mt-4 text-sm text-zinc-500">
           Snapshot price ≈ {(price * 100).toFixed(1)}¢ — a cached estimate, not a live quote. The order
           carries a {(SLIPPAGE * 100).toFixed(0)}% slippage cap so an unexpectedly bad fill is rejected
           rather than executed.
+        </p>
+      ) : orderType === "limit" ? (
+        <p className="mt-4 text-sm text-zinc-500">
+          Rests in the book at this price until filled or canceled —{" "}
+          {expiry === "gtc" ? "good til canceled." : `expires in ${expiry}.`}
         </p>
       ) : null}
 
