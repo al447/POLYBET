@@ -2,7 +2,7 @@
 
 Working context for the Polymarket Integration Platform. **Keep this file current** — see [Maintenance Protocol](#maintenance-protocol) at the bottom.
 
-> **Last updated:** 2026-08-09 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
+> **Last updated:** 2026-08-12 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
 >
 > **Deploy status — updated 2026-08-09.** First deploy **attempted and rejected 2026-08-05** — the client's Cloudflare account was on **Workers Free** and the upload failed with `exceeded the size limit of 3 MiB [code: 10027]`. **Resolved 2026-08-09: the client upgraded to Workers Paid, and a deploy has now succeeded** on the default `*.workers.dev` subdomain. All six request-time secrets are pushed (`wrangler secret put` — the four `POLYMARKET_BUILDER_*`, `PRIVY_APP_SECRET`, `POLYGON_RPC_URL`), and both build-time vars (`NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_POLYMARKET_BUILDER_CODE`) were exported before this build — so the deployed instance should be running in **live mode** with login and builder attribution both wired, not mock mode. **Not yet done:** the custom domain is not wired (still on `*.workers.dev`, not `POLYBETS.XYZ`), and none of [deployment.md §5](deployment.md#5-post-deploy-verification)'s 9 post-deploy checks (signing spike, health, geoblock, security headers, login end-to-end, etc.) have actually been run or recorded against this deployment — the config being in place is not the same as confirming it works. Run §5 before treating this as verified.
 >
@@ -36,10 +36,12 @@ src/
     polymarket/{config,fees,builder,gamma}.ts   clob.ts removed 2026-08-07, was dead code
     polymarket/browser-client.ts                client-side signing, balance/approvals (market orders; limit orders pending)
     polymarket/market-data.ts                   unauthenticated public client + order-book WS reducer (Step 3.1, built 2026-08-09)
+    polymarket/user-events.ts                   authenticated user-channel subscribe + pure fill/order reducer (Step 3.7, built 2026-08-09)
     polymarket/portfolio.ts                     browser-side Data API positions + pure PnL aggregation (Steps 4.1-4.2, built 2026-08-09) — NOT a cached server proxy, see its docstring
     polymarket/withdraw.ts                      Bridge API client + pure validateWithdrawal (FR-4.6, built 2026-08-09) — SDK does NOT wrap this API
   hooks/
-    use-orderbook.ts         live order book, reconnect + full resync on reopen (Step 3.1, built 2026-08-09); use-user-channel.ts (Step 3.7) not yet built
+    use-orderbook.ts         live order book, reconnect + full resync on reopen (Step 3.1, built 2026-08-09)
+    use-user-channel.ts      live fills/order status on the user's own authenticated client (Step 3.7, built 2026-08-09) — emits a `revision` counter to refetch on, NOT state to render
     use-browser-client.ts    shared connect/auto-reconnect state machine (built 2026-08-09); portfolio uses it, trading-panel + deposit-wallet-panel still on their own copies
   components/
     auth/, wallet/, geo/, layout/{nav-bar,nav-search,right-sidebar,privy-auth-area}, ui/{primitives,icons}
@@ -48,7 +50,8 @@ src/
     trade/trading-panel.tsx                               sticky order ticket, market + limit (Step 3.6, built 2026-08-09), Milestone 3 — not yet confirmed against a real mainnet fill
     trade/order-book.tsx                                  live bid/ask depth (Step 3.2, built 2026-08-09), also anchors the trading-panel slippage guard when live; also feeds the limit-price prefill on toggle
     trade/open-orders-panel.tsx                           resting limit orders for the selected outcome + per-order cancel (Step 3.6, built 2026-08-09); no bulk cancel-all yet
-    portfolio/{portfolio-view,position-list}.tsx          positions + PnL dashboard (Steps 4.1-4.2, built 2026-08-09); trade history/rewards/live updates still pending
+    trade/fill-toasts.tsx                                 fill notifications, rendered by both TradingPanel and PortfolioView (Step 3.7, built 2026-08-09)
+    portfolio/{portfolio-view,position-list}.tsx          positions + PnL dashboard (Steps 4.1-4.2, built 2026-08-09), live-refreshing since Step 3.7; trade history + rewards still pending
     portfolio/withdraw-panel.tsx                          pUSD → USDC withdrawal to an external Polygon address (FR-4.6, built 2026-08-09) — irreversible, gated behind an unskippable confirm step
 scripts/
   check-client-bundle.mjs  CI leak guard
@@ -58,6 +61,8 @@ deployment.md              operational runbook — read before any deploy
 ```
 
 **Commands:** `npm run dev` · `lint` · `typecheck` · `test` · `build` · `check:secrets` · `preview` · `deploy` · `smoke:builder` · `builder:provision`
+
+**🚩 The user runs all testing — do not run verification commands yourself.** When a change needs checking (`typecheck`, `test`, `lint`, `build`, `preview`, `dev`, a mainnet pass, a browser check), **stop and hand the user the exact commands to run**, then work from the output they paste back. Do not run them proactively, and do not treat a change as verified until they report the result. This composes with the existing rule to pause after each testable unit rather than chaining through a todo list: finish one coherent piece → list the commands → wait.
 
 **Mock mode.** With no builder credentials set, the app builds and every path runs, but no order is signed. `/api/health` reports `mode` plus presence of the **five** keys in `SECRET_KEYS` (`lib/env.ts`) — the four `POLYMARKET_BUILDER_*` and `PRIVY_APP_SECRET`. It does **not** cover all of P-1…P-9: `POLYGON_RPC_URL` (P-9) is absent from that list, so an empty RPC URL is invisible to the probe and `problems: []` does not mean fully provisioned. Track P-9 by hand.
 
@@ -231,6 +236,10 @@ Measured 2026-08-04 under `opennextjs-cloudflare preview`: `/api/spike/signing` 
 **User flows need the opposite fix — `apiKey`, not EOA mode.** `createUserClient` deliberately omits `wallet` so the user's deterministic Deposit Wallet *is* the account, which means it hits the same deployment path and needs Relayer authorization. Supply it with **`builderApiKey()` from `@polymarket/client/node`** (a `/node` subpath with no `node:` builtins, so workerd-safe) fed from `resolveBuilderAuth(env)`. Without it every authenticated route — status, deploy, qr, orders — fails at client construction and surfaces as `wallet_status_failed`. Confirmed by direct A/B: same call throws without `apiKey`, succeeds with it. Note the SDK's `apiKey` option is typed `apiKey?:` — optional to the compiler, mandatory in practice, so nothing catches its absence at build time.
 
 **Standalone actions are on the `/actions` subpath**, not the root: `import { deployDepositWallet, isWalletDeployed } from "@polymarket/client/actions"`. But `placeMarketOrder`, `fetchClosedOnlyMode`, `listBuilderTrades`, `setupTradingApprovals` **are** client methods. The split is not obvious — check `dist/actions/index.d.ts` before assuming.
+
+**The user WebSocket reports events, not state — and one trade arrives several times.** Verified against the shipped bindings `.d.ts` 2026-08-09. Two things bite here:
+- A `trade` event carries no post-trade position size or cash balance, and the channel has **no snapshot to replay on reconnect** (unlike the market channel's `book`). So the socket can only ever mean "refetch" — `useUserChannel` exposes a `revision` counter for exactly that, and bumps it on every successful connect too, since events during a gap are simply lost. Anything that renders socket-derived numbers directly will drift from on-chain truth.
+- A single trade id repeats as its status walks `TRADE_STATUS_MATCHED → MINED → CONFIRMED` (or `FAILED`/`RETRYING`). Appending each event toasts the user three times for one fill; `applyUserEvent` replaces the entry in place instead.
 
 **npm only — never yarn.** All three Polymarket packages (`@polymarket/client`, `bindings`, `types`) declare `engines.node >= 24`. npm prints an `EBADENGINE` warning and installs; **yarn v1 hard-fails** with `Found incompatible module` and installs nothing. The requirement is advisory here — the published `dist/` has zero `node:` imports, and everything builds and tests clean on Node 22.22.3. Yarn also can't express the `--legacy-peer-deps` workaround below. If you want the warning gone, move to Node 24 LTS; don't switch package managers.
 

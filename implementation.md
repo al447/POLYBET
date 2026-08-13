@@ -506,10 +506,18 @@ Open-orders panel (`components/trade/open-orders-panel.tsx`) lists resting order
 
 ✅ **Done when:** a limit order rests in the book, is visible on polymarket.com, and cancels cleanly. — *Built and typechecked; not yet confirmed against a real resting mainnet order (needs the same manual pass as Step 3.5).*
 
-### Step 3.7 — User WebSocket (FR-4.5)
-`use-user-channel.ts` → `.../ws/user`, L2-authenticated (via the SDK's `subscribe()`, see Step 3.1). Live fills, order status, balance changes. Toast on fill.
+### Step 3.7 — User WebSocket (FR-4.5) — ✅ built 2026-08-09
+`src/hooks/use-user-channel.ts` + `src/lib/polymarket/user-events.ts`, L2-authenticated via the user's own `SecureClient` (`client.subscribe([{ topic: "user" }])` — a bound method on the secure client, so unlike Step 3.1's public feed there's no `/actions` import and no second client). Subscribes to *all* the user's markets, not the one on screen: the portfolio needs every fill, and a per-screen socket would spend a connection to deliver a subset of what one already carries.
 
-✅ **Done when:** a fill updates the UI with no manual refresh.
+**The event/state distinction drives the whole design.** A fill event says a position and a balance changed, **not what they changed to** — the payload carries no post-trade position size or cash figure. So the reducer's main output is `revision`, a counter that means "your cached reads are stale, refetch," and every consumer treats the socket as a *trigger* over REST rather than a source of numbers. `TradingPanel` re-reads the collateral balance and remounts `OpenOrdersPanel`; `PortfolioView` silently re-runs its positions + cash read (no skeleton — flickering the page on every unrelated order tick would be worse than the staleness it fixes).
+
+**Resync differs from Step 3.1's and is the subtle part.** A market re-subscribe replays a full `book` snapshot, so dropping local state and waiting is correct there. The user channel has no snapshot — anything that happened during a gap is gone from the socket's perspective — so the hook bumps `revision` on every *successful connect*, including the first. That closes the race where a fill lands between a page's initial fetch and the socket attaching, at the cost of one duplicate REST read per page load. Accumulated fills are deliberately kept across a reconnect (they're a session log; clearing them would blank the user's recent activity every time a laptop lid closes).
+
+`applyUserEvent` is pure and unit-tested (11 tests, `user-events.test.ts`). ⚠️ **One trade arrives repeatedly** — its status walks `TRADE_STATUS_MATCHED → MINED → CONFIRMED` (or `FAILED`/`RETRYING`) as separate events sharing a trade id — so a repeat id replaces its entry in place instead of being prepended, and `FillToasts` keeps a dismissed id dismissed. Without both, one fill toasts three times.
+
+`components/trade/fill-toasts.tsx` is the visible half: a fixed toast stack, `aria-live="polite"` (a fill must not interrupt someone mid-order-form), auto-dismiss at 10 s, rendered by both `TradingPanel` and `PortfolioView`. `PortfolioView` also gained a live/offline `StatusDot`, so a page whose socket died is distinguishable from a page that's self-updating.
+
+✅ **Done when:** a fill updates the UI with no manual refresh. — *Built, typechecked, unit-tested; not yet observed against a real mainnet fill (same manual pass as Steps 3.5/3.6 — no order has ever been filled through this app).*
 
 ### Step 3.8 — 🔴 Submit Verified tier application
 Email `builder@polymarket.com` with P-2, the use case, expected volume, and the live demo URL (P-8). **Do this at the start of Week 3, not the end** — approval takes several business days, is outside our control, and gates launch.

@@ -35,9 +35,10 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  *
  * All `setState` calls live inside the nested `run()` async function rather
  * than the effect body itself — `react-hooks/set-state-in-effect` flags
- * setState called synchronously in an effect's own lexical body (a real
- * pre-existing violation of this rule sits in `trading-panel.tsx`'s outcome
- * -reset effect, untouched here — out of scope for this change).
+ * setState called synchronously in an effect's own lexical body.
+ *
+ * See `use-user-channel.ts` for the authenticated counterpart, which shares
+ * this resilience loop but resyncs over REST rather than from a snapshot.
  */
 export function useOrderBook(tokenId: string | undefined): {
   book: OrderBookState | null;

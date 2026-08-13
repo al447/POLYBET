@@ -5,12 +5,14 @@ import Link from "next/link";
 import type { Position } from "@polymarket/bindings/data";
 
 import { useBrowserClient } from "@/hooks/use-browser-client";
+import { useUserChannel } from "@/hooks/use-user-channel";
 import { readCollateralBalance, type BrowserClient } from "@/lib/polymarket/browser-client";
 import { listPortfolioPositions, summarizePositions, type PortfolioSummary } from "@/lib/polymarket/portfolio";
 import { fromBaseUnits } from "@/lib/polymarket/fees";
-import { Card } from "@/components/ui/primitives";
+import { Card, StatusDot } from "@/components/ui/primitives";
 import { PositionList } from "@/components/portfolio/position-list";
 import { WithdrawPanel } from "@/components/portfolio/withdraw-panel";
+import { FillToasts } from "@/components/trade/fill-toasts";
 
 /**
  * Portfolio dashboard (FR-4.1–4.3, implementation.md Step 4.2).
@@ -25,8 +27,12 @@ import { WithdrawPanel } from "@/components/portfolio/withdraw-panel";
  * already as a human decimal (hence plain `toFixed`). Mixing those up renders
  * either ~0 or a number 10^6 too large.
  *
- * Live position updates (FR-4.5) aren't here — that's the user WebSocket,
- * Step 3.7. This is a point-in-time read with a manual refresh.
+ * Live updates (FR-4.5) arrive via `useUserChannel` (Step 3.7): a fill or
+ * order event re-runs the same REST read this page already does. The socket
+ * is the *trigger*, never the source of the numbers — a fill event carries no
+ * post-trade position size or cash balance, so refetching is the only way to
+ * get figures that reconcile. The manual refresh button stays for the case
+ * where the socket is down.
  */
 
 type Data =
@@ -36,6 +42,7 @@ type Data =
 
 export function PortfolioView() {
   const { client, status, error, connect } = useBrowserClient();
+  const { state: userChannel, status: liveStatus } = useUserChannel(client);
   const [data, setData] = useState<Data>({ state: "loading" });
 
   const load = useCallback(async (active: BrowserClient) => {
@@ -61,6 +68,28 @@ export function PortfolioView() {
     }
     void run(client);
   }, [client, load]);
+
+  /**
+   * Live refresh on any fill or order event. Deliberately *silent* — no
+   * skeleton, no spinner: the numbers on screen stay readable and are replaced
+   * when the new ones land. A loading state here would make the page flicker
+   * every time an unrelated resting order ticked.
+   *
+   * `revision` also bumps once when the channel first connects, which costs
+   * one duplicate read per page load. That's the price of closing the race
+   * where a fill lands between this page's initial fetch and the socket
+   * attaching — cheap, and the alternative is a position count that stays
+   * silently wrong until the user reloads.
+   */
+  useEffect(() => {
+    if (!client || userChannel.revision === 0) return;
+    // Wrapped like the mount effect above: `react-hooks/set-state-in-effect`
+    // traces through `load`'s `setData` and flags a bare call in the body.
+    async function refresh(active: BrowserClient) {
+      await load(active);
+    }
+    void refresh(client);
+  }, [client, userChannel.revision, load]);
 
   if (status === "signed-out") {
     return <Notice>Sign in to see your positions.</Notice>;
@@ -156,13 +185,25 @@ export function PortfolioView() {
             <h2 className="text-sm font-semibold tracking-wide text-zinc-300 uppercase">
               Positions ({summary.positionCount})
             </h2>
-            <button
-              type="button"
-              onClick={() => client && void load(client)}
-              className="text-xs font-medium text-zinc-500 transition hover:text-zinc-300"
-            >
-              Refresh
-            </button>
+            <div className="flex items-center gap-3">
+              {/*
+                Says whether these figures are self-updating or frozen. Without
+                it a live page and a page whose socket died an hour ago look
+                identical, and the user has no way to know the second one needs
+                a manual refresh.
+              */}
+              <span className="flex items-center gap-1.5 text-xs font-medium text-zinc-500">
+                <StatusDot tone={liveStatus === "live" ? "ok" : liveStatus === "error" ? "bad" : "idle"} />
+                {liveStatus === "live" ? "Live" : liveStatus === "error" ? "Offline" : "Connecting…"}
+              </span>
+              <button
+                type="button"
+                onClick={() => client && void load(client)}
+                className="text-xs font-medium text-zinc-500 transition hover:text-zinc-300"
+              >
+                Refresh
+              </button>
+            </div>
           </div>
           <PositionList positions={positions} />
         </div>
@@ -177,6 +218,8 @@ export function PortfolioView() {
           />
         </div>
       ) : null}
+
+      <FillToasts fills={userChannel.fills} />
     </div>
   );
 }

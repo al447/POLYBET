@@ -24,11 +24,11 @@ export function NavSearch() {
       else params.delete("q");
       const query = params.toString();
       router.replace(query ? `/?${query}` : "/", { scroll: false });
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally
-      // keyed only on `value`; including searchParams/router would refire this
-      // effect on every navigation it itself causes.
     }, 300);
     return () => clearTimeout(handle);
+    // Intentionally keyed only on `value`: including `searchParams`/`router`
+    // would refire this effect on the very navigation it just caused.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
   return (

@@ -23,8 +23,10 @@ import type { GammaMarket, OutcomeToken } from "@/lib/polymarket/gamma-types";
 import { calculateFeeBreakdown, checkBalance, fromBaseUnits, limitOrderNotional, toBaseUnits } from "@/lib/polymarket/fees";
 import { computeGtdExpiration, type GtdDuration } from "@/lib/polymarket/config";
 import { useOrderBook } from "@/hooks/use-orderbook";
+import { useUserChannel } from "@/hooks/use-user-channel";
 import { OrderBook } from "@/components/trade/order-book";
 import { OpenOrdersPanel } from "@/components/trade/open-orders-panel";
+import { FillToasts } from "@/components/trade/fill-toasts";
 
 /**
  * Sticky order ticket (FR-3.1, FR-3.2, FR-3.6, FR-3.3) — market and limit
@@ -50,6 +52,12 @@ import { OpenOrdersPanel } from "@/components/trade/open-orders-panel";
  * Every step that costs relay quota or asks for a wallet signature —
  * connecting, granting trading approvals, submitting — is gated behind an
  * explicit button click, matching `DepositWalletPanel`'s established rule.
+ *
+ * The user channel (Step 3.7, `useUserChannel`, built 2026-08-09) keeps this
+ * panel honest while it's open: a fill refreshes the collateral balance the
+ * order checks run against, any order event refetches the resting-order list,
+ * and `FillToasts` announces fills — including ones placed from another
+ * device, since the channel is per-account, not per-tab.
  *
  * SELL isn't checked against actual holdings: that needs the Data API
  * (Milestone 4, not built). A sell for shares you don't hold is rejected by
@@ -107,7 +115,19 @@ export function TradingPanel({
   const [submission, setSubmission] = useState<Submission>({ state: "idle" });
   const [refreshOrdersToken, setRefreshOrdersToken] = useState(0);
 
-  useEffect(() => {
+  /**
+   * Reset the ticket when the caller switches market or outcome — done during
+   * render (React's "adjusting state when a prop changes" pattern) rather than
+   * in an effect. An effect paints one frame of the *previous* ticket against
+   * the new outcome before resetting, which on an order form means briefly
+   * showing a size and fee breakdown that belong to a different token. The
+   * other obvious fix — re-keying this component from the parent — would also
+   * tear down `connection`, forcing a wallet reconnect on every outcome click.
+   */
+  const ticketKey = `${market.id}:${outcomeIndex}`;
+  const [prevTicketKey, setPrevTicketKey] = useState(ticketKey);
+  if (prevTicketKey !== ticketKey) {
+    setPrevTicketKey(ticketKey);
     setSelectedOutcome(outcomeIndex);
     setSide("BUY");
     setAmount("");
@@ -115,7 +135,7 @@ export function TradingPanel({
     setLimitPrice("");
     setExpiry("gtc");
     setSubmission({ state: "idle" });
-  }, [market.id, outcomeIndex]);
+  }
 
   const outcome = outcomes[selectedOutcome];
   const prices = outcomePriceFractions(market);
@@ -132,6 +152,19 @@ export function TradingPanel({
   const liveBid = bookStatus === "live" ? book?.bids[0]?.price : undefined;
   const buyAnchor: number | null = liveAsk ?? validPrice;
   const sellAnchor: number | null = liveBid ?? validPrice;
+
+  /**
+   * The user channel (Step 3.7) rides whichever authenticated client we
+   * already hold — it's live from `needs-approval` onward, since fills can
+   * land from another tab or device before this panel's own wallet is fully
+   * set up. The client object's identity is stable across those transitions,
+   * so approving trading doesn't tear down the subscription.
+   */
+  const liveClient =
+    connection.state === "ready" || connection.state === "needs-approval" || connection.state === "approving"
+      ? connection.client
+      : null;
+  const { state: userChannel } = useUserChannel(liveClient);
 
   /**
    * Single source of truth for "how much collateral does a BUY need" —
@@ -242,6 +275,36 @@ export function TradingPanel({
     }
     void attemptAutoConnect();
   }, [connection.state, ready, authenticated, wallets, connect]);
+
+  /**
+   * A fill spends collateral, so the balance this panel checks orders against
+   * goes stale the moment one lands. `revision` bumps on every user event
+   * *and* on every (re)connect of the channel, so this also covers fills that
+   * happened while the socket was down — see `useUserChannel`.
+   *
+   * Failure is swallowed on purpose: a balance read that fails leaves the
+   * previous figure in place, which is exactly where we'd be without the
+   * channel at all. Surfacing an error box over the order form for it would
+   * be a downgrade.
+   */
+  useEffect(() => {
+    if (!liveClient || userChannel.revision === 0) return;
+    let cancelled = false;
+
+    async function refreshBalance(client: BrowserClient) {
+      try {
+        const balance = await readCollateralBalance(client);
+        if (!cancelled) setConnection((prev) => (prev.state === "ready" ? { ...prev, balance } : prev));
+      } catch {
+        // Intentionally ignored — see above.
+      }
+    }
+    void refreshBalance(liveClient);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [liveClient, userChannel.revision]);
 
   const approve = useCallback(async () => {
     if (connection.state !== "needs-approval") return;
@@ -426,8 +489,16 @@ export function TradingPanel({
           />
           {outcome ? (
             <div className="mt-5">
+              {/*
+                Remount to refetch. Two triggers: our own limit-order
+                submissions (`refreshOrdersToken`), and anything the user
+                channel reports — a resting order filling, being cancelled from
+                another device, or expiring server-side. Folding the live
+                trigger into the existing key costs nothing and avoids a second
+                refresh mechanism that could disagree with this one.
+              */}
               <OpenOrdersPanel
-                key={refreshOrdersToken}
+                key={`${refreshOrdersToken}:${userChannel.revision}`}
                 client={connection.client}
                 tokenId={outcome.tokenId}
                 outcomeLabel={outcome.label}
@@ -436,6 +507,8 @@ export function TradingPanel({
           ) : null}
         </>
       )}
+
+      <FillToasts fills={userChannel.fills} />
     </div>
   );
 }
