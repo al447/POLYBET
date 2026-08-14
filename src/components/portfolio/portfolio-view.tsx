@@ -8,9 +8,11 @@ import { useBrowserClient } from "@/hooks/use-browser-client";
 import { useUserChannel } from "@/hooks/use-user-channel";
 import { readCollateralBalance, type BrowserClient } from "@/lib/polymarket/browser-client";
 import { listPortfolioPositions, summarizePositions, type PortfolioSummary } from "@/lib/polymarket/portfolio";
+import { groupRedeemable } from "@/lib/polymarket/redeem";
 import { fromBaseUnits } from "@/lib/polymarket/fees";
 import { Card, StatusDot } from "@/components/ui/primitives";
 import { PositionList } from "@/components/portfolio/position-list";
+import { RedeemPanel } from "@/components/portfolio/redeem-panel";
 import { WithdrawPanel } from "@/components/portfolio/withdraw-panel";
 import { FillToasts } from "@/components/trade/fill-toasts";
 
@@ -146,6 +148,13 @@ export function PortfolioView() {
   }
 
   const { positions, summary, cash } = data;
+  /**
+   * Derived, not fetched: `redeemable` already rides along on every position,
+   * so claimable markets cost no extra request and stay consistent with the
+   * table below by construction. Recomputed each render rather than memoised —
+   * it's a single pass over at most 100 positions.
+   */
+  const redeemable = groupRedeemable(positions);
 
   return (
     <div className="space-y-6">
@@ -168,6 +177,19 @@ export function PortfolioView() {
           tone={summary.realizedPnl >= 0 ? "up" : "down"}
         />
       </div>
+
+      {/*
+        Above the positions table on purpose: settled winnings are money the
+        user has already earned and can act on right now, which outranks a
+        mark-to-market view of everything still open.
+      */}
+      {client ? (
+        <RedeemPanel
+          client={client}
+          markets={redeemable}
+          onRedeemed={() => void load(client)}
+        />
+      ) : null}
 
       {positions.length === 0 ? (
         <Card title="Positions">
