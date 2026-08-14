@@ -9,8 +9,9 @@ import { PortfolioView } from "@/components/portfolio/portfolio-view";
  * server never learns the Deposit Wallet address that the Data API needs.
  * See `lib/polymarket/portfolio.ts` for the full reasoning.
  *
- * Not yet here: trade history (FR-4.4), withdrawals (FR-4.6), rewards
- * (FR-5.2/5.3), and live updates from the user WebSocket (FR-4.5).
+ * Trade history (FR-4.4) deliberately lives on `/activity`, not here: this page
+ * answers "what do I hold and what is it worth", that one answers "what have I
+ * done". Not yet here or anywhere: rewards (FR-5.2/5.3).
  */
 export default function PortfolioPage() {
   return (

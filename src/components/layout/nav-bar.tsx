@@ -18,14 +18,16 @@ import { NavSearch } from "@/components/layout/nav-search";
 /**
  * Global masthead (implementation.md UI shell).
  *
- * "Markets", "Portfolio" (Milestone 4), search (`NavSearch`, Milestone 2),
- * and the auth area are live. `Activity` / `Ranks` / `Rewards` /
+ * "Markets", "Portfolio" (Milestone 4), "Activity" (FR-4.4), search
+ * (`NavSearch`, Milestone 2), and the auth area are live. `Ranks` / `Rewards` /
  * notifications still have no feature behind them — they render muted and
  * non-interactive rather than being hidden, matching the rest of the app's
  * convention of explaining an inert control instead of pretending it isn't
  * there (`AuthNotConfigured`, `WalletUnavailable`). "Portfolio" took the slot
  * the inert "Dashboards" placeholder held — it was a stand-in for exactly
- * this, and two chart icons in one rail would just be confusing.
+ * this, and two chart icons in one rail would just be confusing; "Activity"
+ * likewise went live in place of its own placeholder when the trade-history
+ * feed landed.
  *
  * No `"use client"` here: only the auth area and search need client hooks, so
  * the split mirrors `AccountPanel` / `PrivyAccountPanel`.
@@ -56,7 +58,13 @@ export function NavBar() {
             <ChartIcon className="size-4" />
             Portfolio
           </Link>
-          <InertNavItem icon={<ActivityIcon className="size-4" />} label="Activity" />
+          <Link
+            href="/activity"
+            className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-zinc-400 transition hover:text-zinc-100"
+          >
+            <ActivityIcon className="size-4" />
+            Activity
+          </Link>
           <InertNavItem icon={<TrophyIcon className="size-4" />} label="Ranks" />
           <InertNavItem icon={<GiftIcon className="size-4" />} label="Rewards" />
         </nav>

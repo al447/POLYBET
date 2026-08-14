@@ -41,9 +41,13 @@ export function RightSidebar() {
 }
 
 /**
- * Points at the portfolio page rather than claiming a feed it doesn't have.
- * The per-trade activity feed (FR-4.4, `listActivity`) is still unbuilt — but
- * positions and PnL now exist, so "coming in Milestone 3" was simply wrong.
+ * Points at the activity page rather than duplicating the feed here.
+ *
+ * The trade-by-trade history (FR-4.4, `listActivity`) now exists, but it reads
+ * from the user's *authenticated* client — this sidebar renders on every page
+ * including signed-out ones, so mounting it here would mean a second
+ * `SecureClient` connection and an L1 signature prompt just to fill a sidebar
+ * card. The link is the honest version.
  */
 function RecentActivityCard() {
   return (
@@ -53,9 +57,9 @@ function RecentActivityCard() {
           <ClockIcon className="size-5" />
         </span>
         <p className="text-sm text-zinc-500">
-          A full trade-by-trade history isn&apos;t built yet. Your open positions and PnL are on the{" "}
-          <a href="/portfolio" className="text-emerald-400 underline underline-offset-2">
-            portfolio page
+          Your trades, redemptions and rewards are on the{" "}
+          <a href="/activity" className="text-emerald-400 underline underline-offset-2">
+            activity page
           </a>
           .
         </p>
