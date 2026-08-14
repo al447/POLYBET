@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { requireUser, UnauthorizedError } from "@/lib/auth/session";
 import { describeBuilderConfig } from "@/lib/polymarket/builder";
 import { canOpenPositions } from "@/lib/geo/jurisdictions";
+import { userNeedsAcceptance } from "@/lib/legal/acceptance";
+import { ACCEPTANCE_VERSION } from "@/lib/legal/documents";
 import { serverEnv } from "@/lib/env";
 
 /**
@@ -46,7 +48,24 @@ type OrderRequestBody = {
 
 export async function POST(request: Request) {
   try {
-    await requireUser();
+    const user = await requireUser();
+
+    /**
+     * Legal acceptance (FR-6.4). Same advisory character as the geo gate
+     * below: orders are signed client-side, so a determined user can submit to
+     * Polymarket directly and bypass this. It exists so acceptance is enforced
+     * on the path we control, and so a stale client that skipped the gate
+     * cannot quietly place orders.
+     */
+    if (userNeedsAcceptance(user, ACCEPTANCE_VERSION)) {
+      return NextResponse.json(
+        {
+          error: "terms_not_accepted",
+          message: "Please accept the Terms of Service and Risk Disclosure before trading.",
+        },
+        { status: 451 },
+      );
+    }
 
     const geoTier = request.headers.get("x-geo-tier");
     const body = (await request.json()) as OrderRequestBody;

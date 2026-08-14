@@ -3,6 +3,7 @@ import "server-only";
 import type { Signer } from "@polymarket/client";
 
 import { AuthNotConfiguredError, type AuthProvider, type AuthenticatedUser, type SessionTokens } from "./types";
+import { ACCEPTED_AT_KEY, ACCEPTED_VERSION_KEY, readAcceptance } from "@/lib/legal/acceptance";
 import type { ServerEnv } from "@/lib/env";
 
 /**
@@ -54,11 +55,18 @@ export function createPrivyProvider(env: ServerEnv): AuthProvider {
         const wallet = findEmbeddedWallet(user);
         if (!wallet) return null;
 
+        const acceptance = readAcceptance(
+          readCustomMetadata(user),
+          readHasAcceptedTerms(user),
+        );
+
         return {
           userId,
           email: findEmail(user),
           signerAddress: wallet.address,
           walletId: wallet.id,
+          hasAcceptedTerms: acceptance.hasAcceptedTerms,
+          legalVersion: acceptance.version,
         };
       } catch {
         // Invalid or expired tokens are an expected condition, not an error.
@@ -74,7 +82,49 @@ export function createPrivyProvider(env: ServerEnv): AuthProvider {
         walletId: user.walletId,
       });
     },
+
+    /**
+     * Writes the accepted revision to Privy custom metadata (FR-6.4).
+     *
+     * `setCustomMetadata` is a **merge-patch, not a replace** — the SDK types
+     * name its payload `PatchUsersCustomMetadata`, "the payload for partially
+     * updating custom metadata on a user" — so these two keys land alongside
+     * whatever else the bag holds rather than clobbering it.
+     *
+     * Only the version and timestamp are written here. Privy's own
+     * `hasAcceptedTerms` flag is set client-side by `useAcceptTerms()`; there
+     * is no server-side equivalent on this SDK, which is the reason acceptance
+     * is a two-step operation in `AcceptanceGate` rather than one call.
+     */
+    async recordLegalAcceptance(user: AuthenticatedUser, version: string): Promise<void> {
+      const privy = await clientPromise;
+      await privy.users().setCustomMetadata(user.userId, {
+        custom_metadata: {
+          [ACCEPTED_VERSION_KEY]: version,
+          [ACCEPTED_AT_KEY]: new Date().toISOString(),
+        },
+      });
+    },
   };
+}
+
+/**
+ * Privy's user object is snake_case over the wire and camelCase in places
+ * across SDK versions — the existing linked-account readers below hedge the
+ * same way, and for the same reason: a silent `undefined` here would read as
+ * "never accepted" and trap every user behind the gate forever.
+ */
+function readCustomMetadata(user: unknown): Record<string, string | number | boolean> | undefined {
+  const u = user as {
+    custom_metadata?: Record<string, string | number | boolean>;
+    customMetadata?: Record<string, string | number | boolean>;
+  };
+  return u.custom_metadata ?? u.customMetadata;
+}
+
+function readHasAcceptedTerms(user: unknown): boolean {
+  const u = user as { has_accepted_terms?: boolean; hasAcceptedTerms?: boolean };
+  return u.has_accepted_terms ?? u.hasAcceptedTerms ?? false;
 }
 
 function readUserId(claims: unknown): string | null {

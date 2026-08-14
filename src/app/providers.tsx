@@ -4,6 +4,7 @@ import { PrivyProvider } from "@privy-io/react-auth";
 import { polygon } from "viem/chains";
 
 import { PRIVY_APP_ID, isAuthConfigured } from "@/lib/auth/public-config";
+import { LEGAL_DOCUMENTS } from "@/lib/legal/documents";
 
 /**
  * Client-side auth provider (FR-1.1).
@@ -43,6 +44,36 @@ export function Providers({ children }: { children: React.ReactNode }) {
           theme: "dark",
           landingHeader: "Sign in to trade",
           loginMessage: "Prediction markets, powered by Polymarket.",
+        },
+
+        /**
+         * FR-6.4 — puts the Terms in front of the user at the moment of signup
+         * rather than only being findable afterwards.
+         *
+         * Relative path, so this follows whatever origin the app is served from
+         * and never points at the wrong environment. Privy's config overrides
+         * the dashboard's `terms_and_conditions_url`, which keeps the URL in
+         * version control next to the page it points at instead of in a
+         * dashboard field that silently rots when a route changes.
+         *
+         * ⚠️ **`privacyPolicyUrl` is deliberately unset, twice over.** Privy
+         * offers exactly two slots — terms and privacy policy — and the Risk
+         * Disclosure is neither. Pointing the privacy slot at it would render a
+         * link labelled "Privacy Policy" that opens a risk warning, which
+         * mislabels a legal document to every user at signup. And we have no
+         * privacy policy to put there: this app collects an email through Privy
+         * and an IP for the geo gate, so one is very likely required
+         * (GDPR/UK-GDPR at minimum) — **that is a real gap for the client's
+         * counsel, not an oversight to paper over here.**
+         *
+         * The Risk Disclosure reaches the user through the footer on every page
+         * and through the acceptance gate, where it can be labelled correctly.
+         *
+         * Links only, either way: this is *presentation*, not consent. Privy
+         * records nothing about whether the user opened or agreed to anything.
+         */
+        legal: {
+          termsAndConditionsUrl: LEGAL_DOCUMENTS.terms.path,
         },
       }}
     >

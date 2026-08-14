@@ -3,6 +3,8 @@ import localFont from "next/font/local";
 
 import { Providers } from "./providers";
 import { NavBar } from "@/components/layout/nav-bar";
+import { SiteFooter } from "@/components/layout/site-footer";
+import { AcceptanceGate } from "@/components/legal/acceptance-gate";
 import "./globals.css";
 
 /**
@@ -55,7 +57,15 @@ export default function RootLayout({
       <body className="flex min-h-full flex-col bg-zinc-950 text-zinc-100">
         <Providers>
           <NavBar />
-          {children}
+          {/*
+            Only `children` is gated (FR-6.4). The nav and footer stay outside
+            deliberately — the footer carries the links to the very documents
+            the gate asks the user to accept, so burying them behind it would
+            be circular.
+          */}
+          <AcceptanceGate>{children}</AcceptanceGate>
+          {/* `mt-auto` on the footer pins it to the bottom on short pages — body is already flex-col min-h-full. */}
+          <SiteFooter />
         </Providers>
       </body>
     </html>

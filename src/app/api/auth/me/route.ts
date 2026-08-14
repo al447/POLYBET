@@ -7,6 +7,8 @@ import {
   getAuthProvider,
   getCurrentUser,
 } from "@/lib/auth/session";
+import { userNeedsAcceptance } from "@/lib/legal/acceptance";
+import { ACCEPTANCE_VERSION } from "@/lib/legal/documents";
 
 /**
  * Server-verified session (FR-1.1).
@@ -62,6 +64,23 @@ export async function GET() {
         userId: user.userId,
         email: user.email ?? null,
         signerAddress: user.signerAddress,
+      },
+      /**
+       * Legal acceptance as the *server* sees it (FR-6.4).
+       *
+       * Included because this is the route that exists to make auth
+       * preconditions visible, and acceptance has a failure mode with the same
+       * shape as the identity-token one above: the flag is read off the
+       * identity token, which is minted at login. A user who has just accepted
+       * may still read as `accepted: false` here until that token rotates —
+       * and without this field, that presents as `/api/orders` inexplicably
+       * returning 451 to someone who definitely accepted.
+       */
+      legal: {
+        accepted: !userNeedsAcceptance(user, ACCEPTANCE_VERSION),
+        acceptedVersion: user.legalVersion,
+        currentVersion: ACCEPTANCE_VERSION,
+        providerFlag: user.hasAcceptedTerms,
       },
     },
     { headers: { "cache-control": "no-store" } },

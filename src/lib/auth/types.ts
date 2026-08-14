@@ -16,6 +16,14 @@ export type AuthenticatedUser = {
   signerAddress: string;
   /** Provider-side wallet id, needed to build a Signer. */
   walletId: string;
+  /**
+   * Legal acceptance (FR-6.4). Read from the session, so it costs nothing on
+   * the common path — see `lib/legal/acceptance.ts` for why it takes two
+   * fields rather than one boolean.
+   */
+  hasAcceptedTerms: boolean;
+  /** Revision of the legal documents this user accepted, or null if none recorded. */
+  legalVersion: string | null;
 };
 
 /**
@@ -33,6 +41,16 @@ export interface AuthProvider {
   verifySession(tokens: SessionTokens): Promise<AuthenticatedUser | null>;
   /** Builds a Polymarket Signer bound to the user's embedded wallet. */
   createSigner(user: AuthenticatedUser): Promise<Signer>;
+  /**
+   * Durably records that this user accepted the given revision of the legal
+   * documents (FR-6.4).
+   *
+   * Lives on the provider rather than in the route so the Privy-specific
+   * storage (custom metadata) stays behind this boundary — the same reason
+   * `createSigner` does. A different provider would record it wherever it keeps
+   * user attributes.
+   */
+  recordLegalAcceptance(user: AuthenticatedUser, version: string): Promise<void>;
 }
 
 export class AuthNotConfiguredError extends Error {

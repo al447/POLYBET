@@ -14,6 +14,7 @@
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
     "check:secrets": "node scripts/check-client-bundle.mjs",
+    "check:legal": "node scripts/check-legal.mjs",
     "smoke:builder": "node scripts/smoke-builder.mjs",
     "builder:provision": "node scripts/provision-builder.mjs"
   },
