@@ -87,6 +87,66 @@ describe("listEvents", () => {
     expect(requestedUrl?.searchParams.get("tag_id")).toBe("5");
     expect(requestedUrl?.searchParams.has("offset")).toBe(false);
   });
+
+  // Regression guard. A keyset cursor is bound to the sort that produced it:
+  // replaying it under a different order — including none — makes Gamma 422.
+  // Re-probed live 2026-08-15, correcting a 2026-08-07 note that had it
+  // backwards and dropped `order` once paginating, which broke "Load more".
+  it("still sends order and ascending when paginating with a cursor", async () => {
+    let requestedUrl: URL | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        requestedUrl = new URL(input);
+        return new Response(JSON.stringify({ events: [] }), { status: 200 });
+      }),
+    );
+
+    await listEvents({ cursor: "page-2", order: "volume", ascending: false });
+
+    expect(requestedUrl?.searchParams.get("after_cursor")).toBe("page-2");
+    expect(requestedUrl?.searchParams.get("order")).toBe("volume");
+    expect(requestedUrl?.searchParams.get("ascending")).toBe("false");
+  });
+
+  it("maps range filters to Gamma's snake_case params", async () => {
+    let requestedUrl: URL | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        requestedUrl = new URL(input);
+        return new Response(JSON.stringify({ events: [] }), { status: 200 });
+      }),
+    );
+
+    await listEvents({
+      volumeMin: 100_000,
+      liquidityMin: 50_000,
+      endDateMax: "2026-08-22T23:59:59.999Z",
+    });
+
+    expect(requestedUrl?.searchParams.get("volume_min")).toBe("100000");
+    expect(requestedUrl?.searchParams.get("liquidity_min")).toBe("50000");
+    expect(requestedUrl?.searchParams.get("end_date_max")).toBe("2026-08-22T23:59:59.999Z");
+  });
+
+  it("omits range filters that aren't set", async () => {
+    let requestedUrl: URL | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        requestedUrl = new URL(input);
+        return new Response(JSON.stringify({ events: [] }), { status: 200 });
+      }),
+    );
+
+    await listEvents({ volumeMin: 100_000 });
+
+    expect(requestedUrl?.searchParams.has("volume_min")).toBe(true);
+    expect(requestedUrl?.searchParams.has("liquidity_min")).toBe(false);
+    expect(requestedUrl?.searchParams.has("end_date_max")).toBe(false);
+    expect(requestedUrl?.searchParams.has("end_date_min")).toBe(false);
+  });
 });
 
 describe("listMarkets", () => {

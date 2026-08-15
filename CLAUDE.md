@@ -2,7 +2,7 @@
 
 Working context for the Polymarket Integration Platform. **Keep this file current** — see [Maintenance Protocol](#maintenance-protocol) at the bottom.
 
-> **Last updated:** 2026-08-12 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
+> **Last updated:** 2026-08-15 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
 >
 > **Deploy status — updated 2026-08-09.** First deploy **attempted and rejected 2026-08-05** — the client's Cloudflare account was on **Workers Free** and the upload failed with `exceeded the size limit of 3 MiB [code: 10027]`. **Resolved 2026-08-09: the client upgraded to Workers Paid, and a deploy has now succeeded** on the default `*.workers.dev` subdomain. All six request-time secrets are pushed (`wrangler secret put` — the four `POLYMARKET_BUILDER_*`, `PRIVY_APP_SECRET`, `POLYGON_RPC_URL`), and both build-time vars (`NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_POLYMARKET_BUILDER_CODE`) were exported before this build — so the deployed instance should be running in **live mode** with login and builder attribution both wired, not mock mode. **Not yet done:** the custom domain is not wired (still on `*.workers.dev`, not `POLYBETS.XYZ`), and none of [deployment.md §5](deployment.md#5-post-deploy-verification)'s 9 post-deploy checks (signing spike, health, geoblock, security headers, login end-to-end, etc.) have actually been run or recorded against this deployment — the config being in place is not the same as confirming it works. Run §5 before treating this as verified.
 >
@@ -284,6 +284,23 @@ This is a **correctness win, not a nuisance** — the runtime really does return
 
 Polymarket rejects blocked orders server-side regardless; our check exists so users get real feedback instead of opaque failures.
 
+**🚩 A Gamma keyset cursor is bound to the sort that produced it — replay `order`/`ascending` on EVERY page.** Re-probed live 2026-08-15. Passing a cursor back under a different sort returns **422**, and "no sort at all" counts as a different sort:
+
+| Cursor generated with | Replayed with | Result |
+|---|---|---|
+| `order=volume` | `order=volume` | **200** |
+| `order=volume` | *(nothing)* | **422** |
+| *(nothing)* | *(nothing)* | 200 |
+| `order=liquidity` | `order=liquidity` | 200 |
+
+**This corrects an entry recorded here on 2026-08-07 that had it exactly backwards** — it concluded "`/events/keyset` 422s on `order=volume` + `after_cursor`, so cursor pagination doesn't support a volume sort" and made `/api/markets` *drop* `order` once paginating. Every sort paginates fine; dropping the sort is what 422s. The consequence ran in production unnoticed: page 1 sorted by volume, page 2 asked the same cursor for an unsorted page, Gamma 422'd, and **"Load more" never worked** — surfacing as a generic "Failed to load more markets" with nothing pointing at the cause. Fixed 2026-08-15 alongside the FR-2.2 sort UI.
+
+Two things follow. Any server-rendered first page must use the *same* sort the client will paginate under (`DiscoverySection` and `MarketGrid` share `DEFAULT_SORT_ID` for this reason). And `order`/`ascending` travel as a single opaque **sort id** through `/api/markets`, never as a separable pair, so a caller cannot construct a combination that was never verified.
+
+**Gamma range filters work and are verified: `volume_min`, `liquidity_min`, `end_date_min`, `end_date_max`.** Confirmed 2026-08-15 to actually filter, not merely return 200 (min volume seen tracked the bound 114k → 1.4M → 52.6M; result counts shrink). Exposed as presets (`VOLUME_FILTERS` etc. in `gamma-types.ts`), not free-form numbers — **arbitrary values would give nearly every request its own `getCachedEvents` key** and quietly undo FR-2.5's edge caching. For the same reason `endingBefore()` quantises "ending within N days" to the end of the UTC day rather than `now + N days` to the millisecond.
+
+⚠️ `active:true`/`closed:false` still don't fully exclude stale events — an `end_date_max` query returned an event with a 2025 end date. Known Gamma looseness, not a filter bug.
+
 **Withdrawals were never in the client SRS.** Added as FR-4.6. Deposit-only is not shippable. **Built 2026-08-09** — see the next two entries for what the research turned up.
 
 **🚩 Withdrawals go through the Bridge API, which the SDK does NOT wrap.** Verified live 2026-08-09. `https://bridge.polymarket.com`: `GET /supported-assets` → `POST /quote` → `POST /withdraw` (returns a one-off bridge address) → **transfer pUSD to that address** via the SDK's `transferErc20` → `GET /status/{address}`. Polymarket unwraps pUSD→USDC through their Collateral Offramp + a Uniswap v3 pool; we never touch those contracts, and they charge no withdrawal fee (the quote's cost is gas + swap impact, ~$0.0006 on a $10 test quote, ~27s to arrive).
@@ -393,7 +410,7 @@ The client has separately described wanting full Polymarket.com feature parity: 
 
 | Wishlist item | Status |
 |---|---|
-| Entire market categories/segments/events | **Covered at no extra cost.** Discovery UI (Step 2.3, implementation.md) reads Gamma's live category taxonomy instead of a hardcoded list — see the FR-2.2 decision in srs.md. |
+| Entire market categories/segments/events | **Covered at no extra cost.** Discovery UI (Step 2.3, implementation.md) browses the whole Gamma catalogue with category, sort and range filters. ⚠️ Correction 2026-08-15: the category chips come from the curated `TOP_CATEGORIES` constant in `gamma-types.ts`, **not** a live tags fetch — an earlier version of this line claimed otherwise. `listTags` exists but is deliberately unwired; see the comment at the foot of `gamma.ts` (unfiltered `/tags` was garbage, `isCarousel:true` too sparse). |
 | Users' deposits | **Done.** Client-provisioned Deposit Wallet, QR + address + balance-polling flow (`deposit-wallet-panel.tsx`). |
 | Signup/signin | **Done, kept as-is per client direction 2026-08-07.** Privy embedded wallet, email-only login. No standalone `/login` page — auth is embedded in the nav bar / home page. |
 | Copy trade feature | **Not in scope — Phase 2, unfunded, legally blocked.** OI-5: auto-executing on a user's behalf requires server-held delegated signing or session keys, which conflicts with the non-custodial architecture (§6.1, srs.md) and needs a product + legal decision before any code. FR-8 in srs.md. |

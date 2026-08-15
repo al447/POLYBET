@@ -53,7 +53,15 @@ const DEFAULT_LIMIT = 50;
 const MAX_RETRIES = 3;
 const REQUEST_TIMEOUT_MS = 8000;
 
-/** Lists active events with their nested markets, newest-filterable via `order`. */
+/**
+ * Lists active events with their nested markets, sortable via `order` and
+ * narrowable via the `*Min`/`*Max` range filters (FR-2.2).
+ *
+ * 🚩 A keyset cursor is bound to the sort that produced it. Whatever
+ * `order`/`ascending` fetched page 1 must be passed again for page 2 or Gamma
+ * returns 422 — including the case of dropping them entirely. Callers that
+ * paginate must carry their sort with them; see `/api/markets`.
+ */
 export async function listEvents(
   params: ListEventsParams = {},
 ): Promise<KeysetPage<GammaEvent>> {
@@ -66,6 +74,10 @@ export async function listEvents(
     featured: params.featured,
     order: params.order,
     ascending: params.ascending,
+    volume_min: params.volumeMin,
+    liquidity_min: params.liquidityMin,
+    end_date_min: params.endDateMin,
+    end_date_max: params.endDateMax,
   });
   const data = await gammaFetch<{ events: GammaEvent[]; next_cursor?: string }>(
     `/events/keyset?${query}`,

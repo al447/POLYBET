@@ -127,7 +127,140 @@ export type ListEventsParams = {
   featured?: boolean;
   order?: string;
   ascending?: boolean;
+  volumeMin?: number;
+  liquidityMin?: number;
+  endDateMin?: string;
+  endDateMax?: string;
 };
+
+/** Finds an option by id, falling back to the first (always the "no-op" one). */
+function resolveOption<T extends { id: string }>(options: readonly T[], id: string | null | undefined): T {
+  return options.find((option) => option.id === id) ?? options[0];
+}
+
+function hasOptionId(options: readonly { id: string }[], value: string): boolean {
+  return options.some((option) => option.id === value);
+}
+
+/**
+ * Discovery sort options (FR-2.2).
+ *
+ * Each entry pairs a Gamma `order` value with the `ascending` that makes it
+ * mean what its label says — "Ending soon" is `endDate` ASC, everything else
+ * is DESC. They travel together deliberately: `/api/markets` takes a sort
+ * *id*, never a raw `order`/`ascending` pair, so a caller cannot request
+ * `endDate` DESC ("furthest away first") or otherwise split the two apart.
+ *
+ * All five probed live against `/events/keyset` on 2026-08-15 and confirmed to
+ * change the result order, not merely return 200. Every one paginates — but
+ * only if the cursor is replayed under the same sort it was generated with;
+ * see the binding note in `listEvents`.
+ */
+export const EVENT_SORTS = [
+  { id: "top", label: "Top", order: "volume", ascending: false },
+  { id: "trending", label: "Trending", order: "volume24hr", ascending: false },
+  { id: "liquidity", label: "Most liquid", order: "liquidity", ascending: false },
+  { id: "ending", label: "Ending soon", order: "endDate", ascending: true },
+  { id: "new", label: "Newest", order: "startDate", ascending: false },
+] as const;
+
+export type EventSort = (typeof EVENT_SORTS)[number];
+export type EventSortId = EventSort["id"];
+
+export const DEFAULT_SORT_ID: EventSortId = "top";
+
+/** Resolves a wire value to a sort, falling back to the default on anything unrecognised. */
+export function resolveSort(id: string | null | undefined): EventSort {
+  return resolveOption(EVENT_SORTS, id);
+}
+
+/** Narrows an arbitrary string to a known sort id — for validating query params. */
+export function isEventSortId(value: string): value is EventSortId {
+  return hasOptionId(EVENT_SORTS, value);
+}
+
+/**
+ * Range filters (FR-2.2's "volume, liquidity, end date").
+ *
+ * Presets rather than free-form numeric inputs, following the same reasoning
+ * as the GTD expiry durations in config.ts: a small closed set is easier to
+ * use, impossible to send nonsense through, and — the part that matters here —
+ * keeps the `getCachedEvents` key space small. Arbitrary numbers would give
+ * nearly every request its own cache entry and quietly undo FR-2.5's edge
+ * caching.
+ *
+ * `volume_min` / `liquidity_min` / `end_date_max` were all confirmed to
+ * actually filter (not just return 200) against `/events/keyset` on
+ * 2026-08-15. The first option of each is the no-op and must stay first —
+ * `resolveOption` falls back to it.
+ */
+export const VOLUME_FILTERS = [
+  { id: "any", label: "Any", min: undefined },
+  { id: "100k", label: "$100k+", min: 100_000 },
+  { id: "1m", label: "$1M+", min: 1_000_000 },
+] as const;
+
+export const LIQUIDITY_FILTERS = [
+  { id: "any", label: "Any", min: undefined },
+  { id: "50k", label: "$50k+", min: 50_000 },
+  { id: "500k", label: "$500k+", min: 500_000 },
+] as const;
+
+export const ENDING_FILTERS = [
+  { id: "any", label: "Any", days: undefined },
+  { id: "7d", label: "7 days", days: 7 },
+  { id: "30d", label: "30 days", days: 30 },
+] as const;
+
+export type VolumeFilterId = (typeof VOLUME_FILTERS)[number]["id"];
+export type LiquidityFilterId = (typeof LIQUIDITY_FILTERS)[number]["id"];
+export type EndingFilterId = (typeof ENDING_FILTERS)[number]["id"];
+
+export const DEFAULT_FILTER_ID = "any";
+
+export function resolveVolumeFilter(id: string | null | undefined) {
+  return resolveOption(VOLUME_FILTERS, id);
+}
+
+export function resolveLiquidityFilter(id: string | null | undefined) {
+  return resolveOption(LIQUIDITY_FILTERS, id);
+}
+
+export function resolveEndingFilter(id: string | null | undefined) {
+  return resolveOption(ENDING_FILTERS, id);
+}
+
+export function isVolumeFilterId(value: string): value is VolumeFilterId {
+  return hasOptionId(VOLUME_FILTERS, value);
+}
+
+export function isLiquidityFilterId(value: string): value is LiquidityFilterId {
+  return hasOptionId(LIQUIDITY_FILTERS, value);
+}
+
+export function isEndingFilterId(value: string): value is EndingFilterId {
+  return hasOptionId(ENDING_FILTERS, value);
+}
+
+/**
+ * Upper `endDate` bound for an "ending within N days" filter, as an ISO string.
+ *
+ * 🚩 Quantised to the end of the UTC day, deliberately. The obvious
+ * implementation — `now + N days` to the millisecond — gives every single
+ * request a unique `end_date_max`, so every request becomes its own
+ * `getCachedEvents` entry and the ~60s cache stops doing anything. Rounding to
+ * a day boundary makes the whole day share one key, and "ending within 7 days"
+ * is not a claim anyone reads to the second.
+ *
+ * `now` is a parameter so this stays pure and testable, matching
+ * `computeGtdExpiration` in config.ts.
+ */
+export function endingBefore(days: number, now: Date = new Date()): string {
+  const bound = new Date(now);
+  bound.setUTCDate(bound.getUTCDate() + days);
+  bound.setUTCHours(23, 59, 59, 999);
+  return bound.toISOString();
+}
 
 export type ListMarketsParams = {
   cursor?: string;

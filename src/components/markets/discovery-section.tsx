@@ -1,5 +1,5 @@
 import { getCachedEvents } from "@/lib/polymarket/gamma";
-import { TOP_CATEGORIES } from "@/lib/polymarket/gamma-types";
+import { DEFAULT_SORT_ID, TOP_CATEGORIES, resolveSort } from "@/lib/polymarket/gamma-types";
 import { MarketGrid } from "@/components/markets/market-grid";
 
 /**
@@ -14,7 +14,12 @@ import { MarketGrid } from "@/components/markets/market-grid";
  * in gamma-types.ts for why.
  */
 export async function DiscoverySection() {
-  const page = await getCachedEvents({ limit: 24 });
+  // Must sort by the same default `MarketGrid` starts on. The cursor this
+  // returns is bound to whatever sort produced it, so an unsorted first page
+  // here would 422 the grid's very first "Load more" the moment it asked for
+  // page 2 under "Top". Keep these two in step.
+  const sort = resolveSort(DEFAULT_SORT_ID);
+  const page = await getCachedEvents({ limit: 24, order: sort.order, ascending: sort.ascending });
 
   if (!page.ok) {
     return (
