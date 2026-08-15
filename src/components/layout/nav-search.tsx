@@ -7,10 +7,15 @@ import { SearchIcon } from "@/components/ui/icons";
 
 /**
  * Live market search (FR-2.4), wired to the discovery grid via the `q` URL
- * param — see `MarketGrid`'s client-side substring filter over already-loaded
- * markets. Debounced so every keystroke doesn't rewrite browser history.
+ * param. `MarketGrid` reads it and switches to full-catalogue search against
+ * Gamma's `/public-search` — not a filter over what's already on screen, which
+ * is what this used to drive. Debounced so every keystroke doesn't rewrite
+ * browser history or spend a request.
  *
- * Always targets `/` — it's the only page with a market grid to filter.
+ * Always targets `/` — it's the only page with a market grid.
+ *
+ * ⚠️ `hidden lg:block`: there is no search on mobile yet. It belongs in the
+ * nav bar's mobile menu, which is still a disabled placeholder.
  */
 export function NavSearch() {
   const router = useRouter();

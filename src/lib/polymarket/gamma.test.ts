@@ -7,6 +7,7 @@ import {
   listMarkets,
   listTags,
   parseGammaJsonArray,
+  searchEvents,
 } from "./gamma";
 
 /**
@@ -146,6 +147,82 @@ describe("listEvents", () => {
     expect(requestedUrl?.searchParams.has("liquidity_min")).toBe(false);
     expect(requestedUrl?.searchParams.has("end_date_max")).toBe(false);
     expect(requestedUrl?.searchParams.has("end_date_min")).toBe(false);
+  });
+});
+
+describe("searchEvents", () => {
+  const captureUrl = () => {
+    const seen: { url?: URL } = {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        seen.url = new URL(input);
+        return new Response(
+          JSON.stringify({ events: [fixtureEvent], pagination: { hasMore: true, totalResults: 42 } }),
+          { status: 200 },
+        );
+      }),
+    );
+    return seen;
+  };
+
+  it("hits /public-search and maps the pagination envelope", async () => {
+    const seen = captureUrl();
+
+    const page = await searchEvents({ query: "trump" });
+
+    expect(seen.url?.pathname).toBe("/public-search");
+    expect(seen.url?.searchParams.get("q")).toBe("trump");
+    expect(page.items).toEqual([fixtureEvent]);
+    expect(page.hasMore).toBe(true);
+    expect(page.totalResults).toBe(42);
+  });
+
+  // 🚩 `closed=false` is silently ignored by this endpoint — `events_status`
+  // is the only thing that excludes resolved markets. Verified live
+  // 2026-08-15: without it, 3 of 10 results came back closed.
+  it("always sends events_status=active", async () => {
+    const seen = captureUrl();
+
+    await searchEvents({ query: "trump" });
+
+    expect(seen.url?.searchParams.get("events_status")).toBe("active");
+  });
+
+  it("paginates by page number, not cursor", async () => {
+    const seen = captureUrl();
+
+    const page = await searchEvents({ query: "trump", page: 3 });
+
+    expect(seen.url?.searchParams.get("page")).toBe("3");
+    expect(seen.url?.searchParams.has("after_cursor")).toBe(false);
+    expect(page.page).toBe(3);
+  });
+
+  it("clamps limit to the upstream ceiling of 50", async () => {
+    const seen = captureUrl();
+
+    await searchEvents({ query: "trump", limit: 500 });
+
+    expect(seen.url?.searchParams.get("limit_per_type")).toBe("50");
+  });
+
+  it("floors the page at 1", async () => {
+    const seen = captureUrl();
+
+    await searchEvents({ query: "trump", page: 0 });
+
+    expect(seen.url?.searchParams.get("page")).toBe("1");
+  });
+
+  it("tolerates a response with no events or pagination", async () => {
+    mockFetchOnce({});
+
+    const page = await searchEvents({ query: "nothing-matches-this" });
+
+    expect(page.items).toEqual([]);
+    expect(page.hasMore).toBe(false);
+    expect(page.totalResults).toBe(0);
   });
 });
 

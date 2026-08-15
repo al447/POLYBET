@@ -133,6 +133,31 @@ export type ListEventsParams = {
   endDateMax?: string;
 };
 
+/**
+ * Full-catalogue search (FR-2.4), served by Gamma's `/public-search`.
+ *
+ * 🚩 A different endpoint with a different vocabulary from `/events/keyset` —
+ * see `searchEvents`. Page-numbered rather than cursor-based, and it ignores
+ * every sort and range-filter param, which is why the discovery UI hides those
+ * controls while a search is active.
+ */
+export type SearchEventsParams = {
+  query: string;
+  page?: number;
+  limit?: number;
+};
+
+export type SearchPage<T> = {
+  items: T[];
+  page: number;
+  hasMore: boolean;
+  totalResults: number;
+};
+
+/** `limit_per_type` is capped at 50 upstream — larger values silently clamp. */
+export const SEARCH_MAX_LIMIT = 50;
+export const SEARCH_PAGE_SIZE = 24;
+
 /** Finds an option by id, falling back to the first (always the "no-op" one). */
 function resolveOption<T extends { id: string }>(options: readonly T[], id: string | null | undefined): T {
   return options.find((option) => option.id === id) ?? options[0];
@@ -260,6 +285,49 @@ export function endingBefore(days: number, now: Date = new Date()): string {
   bound.setUTCDate(bound.getUTCDate() + days);
   bound.setUTCHours(23, 59, 59, 999);
   return bound.toISOString();
+}
+
+/**
+ * Lower `endDate` bound that excludes markets which have already ended —
+ * always applied to the browse feed.
+ *
+ * 🚩 `closed: false` does NOT mean "still tradeable". Gamma leaves expired
+ * events open long after their end date, and measured 2026-08-15 that is not a
+ * rare edge: the "Ending soon" sort (`order=endDate` ascending) returned
+ * **24 of 24 already-ended events** — an entire first page of dead markets,
+ * since sorting by soonest end naturally surfaces the oldest expired ones
+ * first. Volume sorts were milder (2-3 of 24) but still wrong.
+ *
+ * Quantised to the hour: same cache-key argument as `endingBefore`, but an
+ * hour rather than a day because a market that ended 20 minutes ago should
+ * drop out reasonably promptly. 24 cache buckets a day is a small key space.
+ *
+ * ⚠️ Known cost: this also drops events with no `endDate` at all — measured at
+ * 2 per 100, and they can be real (undated esports tournament winners with
+ * $1M+ volume). Gamma has no "endDate is null OR in the future" filter, so the
+ * choice is between losing those two and shipping a dead "Ending soon" tab.
+ * `isLiveEvent` keeps nulls where filtering happens client-side.
+ */
+export function endingAfter(now: Date = new Date()): string {
+  const bound = new Date(now);
+  bound.setUTCMinutes(0, 0, 0);
+  return bound.toISOString();
+}
+
+/**
+ * Whether an event is still open, for filtering where the API can't do it —
+ * `/public-search` ignores `end_date_min` along with every other filter, so
+ * search results are filtered here instead (~1 in 20 come back ended).
+ *
+ * Unlike `endingAfter`, this keeps events with no `endDate`: filtering in
+ * memory can express "undated or future", which the API query cannot.
+ */
+export function isLiveEvent(event: Pick<GammaEvent, "endDate" | "closed">, now: Date = new Date()): boolean {
+  if (event.closed) return false;
+  if (!event.endDate) return true;
+
+  const end = Date.parse(event.endDate);
+  return Number.isNaN(end) || end >= now.getTime();
 }
 
 export type ListMarketsParams = {

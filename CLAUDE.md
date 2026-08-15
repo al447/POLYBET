@@ -26,7 +26,8 @@ src/
     api/auth/me            server-verified session (FR-1.1)
     api/builder/sign       HMAC signing for client-side order signing (SEC-1/2)
     api/orders             pre-trade authorization — NOT order placement, see Traps
-    api/markets            Gamma event-list proxy, cached (FR-2.1/2.5, new)
+    api/markets            Gamma event-list proxy, cached (FR-2.1/2.2/2.5) — sort + range filters
+    api/markets/search     Gamma /public-search proxy, cached (FR-2.4) — page-numbered, NOT cursor
     api/spike/signing      Workers signing diagnostic (Milestone 1 gate)
   lib/
     env.ts                 request-time secrets via getCloudflareContext
@@ -300,6 +301,30 @@ Two things follow. Any server-rendered first page must use the *same* sort the c
 **Gamma range filters work and are verified: `volume_min`, `liquidity_min`, `end_date_min`, `end_date_max`.** Confirmed 2026-08-15 to actually filter, not merely return 200 (min volume seen tracked the bound 114k → 1.4M → 52.6M; result counts shrink). Exposed as presets (`VOLUME_FILTERS` etc. in `gamma-types.ts`), not free-form numbers — **arbitrary values would give nearly every request its own `getCachedEvents` key** and quietly undo FR-2.5's edge caching. For the same reason `endingBefore()` quantises "ending within N days" to the end of the UTC day rather than `now + N days` to the millisecond.
 
 ⚠️ `active:true`/`closed:false` still don't fully exclude stale events — an `end_date_max` query returned an event with a 2025 end date. Known Gamma looseness, not a filter bug.
+
+**🚩 `closed: false` does NOT mean "still tradeable" — filter on `end_date_min` too.** Gamma leaves expired events flagged open indefinitely. Measured 2026-08-15 across a 24-event first page, all with `active=true&closed=false`:
+
+| Sort | Already-ended in page 1 |
+|---|---|
+| `endDate` ascending ("Ending soon") | **24 / 24** |
+| `volume24hr` | 3 / 24 |
+| `volume` | 2 / 24 |
+| `liquidity`, `startDate` | 0 / 24 |
+
+The "Ending soon" case is total — sorting by soonest end surfaces the *oldest expired* events first, so the entire tab was dead markets. Adding `end_date_min=<now>` takes every sort to zero. `/api/markets` now always sends it (`endingAfter()`, quantised to the hour for cache-key stability), which also repairs the "Ending in 7 days" filter: with only `end_date_max` it meant "any time before then", including last year.
+
+⚠️ Known cost: `end_date_min` also drops events with **no** `endDate` — ~2 per 100, and some are real (undated esports tournament winners, $1M+ volume). Gamma has no "null OR future" filter. Where filtering happens in memory instead, `isLiveEvent()` keeps them.
+
+⚠️ Search needs the same fix by a different route: `/public-search` **ignores `end_date_min`** like every other filter, and `events_status=active` only excludes *closed* events — ~1 result in 20 comes back ended-but-open. `/api/markets/search` filters with `isLiveEvent()` **after** the cached call, deliberately: the predicate reads the clock, and running it inside a `"use cache"` function would freeze "now" into the entry.
+
+**🚩 Search is `/public-search`, and almost nothing you know about `/events/keyset` transfers.** Verified live 2026-08-15 (`/search` is 401 auth-only; `/events/search` 422s — `/public-search` is the one). Four separate traps:
+
+- **`closed=false` and `active=true` are accepted and silently ignored.** The param that actually excludes resolved markets is **`events_status=active`**. Measured: the same query returned **3 closed events out of 10** with `closed=false` set, and **0** with `events_status=active`. Get this wrong and resolved 2025 markets sit at the top of search results with no error anywhere.
+- **Pagination is `page=N`, 1-based — there is no cursor.** The response carries `pagination: { hasMore, totalResults }` instead of `next_cursor`, so the cursor/sort binding rule above simply doesn't apply here.
+- **`limit_per_type` clamps at 50.** Asking for 100 returns 50.
+- **Sort and range filters do nothing.** `order`, `ascending` and `volume_min` are all ignored — identical first result with and without them. This is why the discovery UI *hides* the sort/filter chips during a search rather than disabling them: leaving them on screen would imply they still apply.
+
+Events come back in the same shape as the listing endpoints, nested markets included, so they render through `MarketCard` unchanged. Lives behind `/api/markets/search` — a separate route from `/api/markets` precisely because the two contracts differ this much; folding them together would mean one route returning two shapes.
 
 **Withdrawals were never in the client SRS.** Added as FR-4.6. Deposit-only is not shippable. **Built 2026-08-09** — see the next two entries for what the research turned up.
 

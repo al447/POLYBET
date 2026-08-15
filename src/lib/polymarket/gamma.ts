@@ -3,7 +3,7 @@ import "server-only";
 import { cacheLife, cacheTag } from "next/cache";
 
 import { POLYMARKET_ENDPOINTS } from "./config";
-import { GammaApiError } from "./gamma-types";
+import { GammaApiError, SEARCH_MAX_LIMIT, SEARCH_PAGE_SIZE } from "./gamma-types";
 import type {
   GammaEvent,
   GammaMarket,
@@ -11,6 +11,8 @@ import type {
   KeysetPage,
   ListEventsParams,
   ListMarketsParams,
+  SearchEventsParams,
+  SearchPage,
 } from "./gamma-types";
 
 /**
@@ -47,6 +49,8 @@ export type {
   KeysetPage,
   ListEventsParams,
   ListMarketsParams,
+  SearchEventsParams,
+  SearchPage,
 } from "./gamma-types";
 
 const DEFAULT_LIMIT = 50;
@@ -102,6 +106,79 @@ export async function listMarkets(
     `/markets/keyset?${query}`,
   );
   return { items: data.markets, nextCursor: data.next_cursor ?? null };
+}
+
+/**
+ * Full-catalogue event search (FR-2.4).
+ *
+ * 🚩 `/public-search` is a different endpoint from `/events/keyset` with its
+ * own vocabulary — verified live 2026-08-15, and none of it is guessable from
+ * the listing endpoints:
+ *
+ * - **`events_status=active` is what excludes resolved markets.** `closed=false`
+ *   and `active=true` are accepted and then silently ignored: the same query
+ *   returned 3 closed events out of 10 with them set, and 0 with
+ *   `events_status=active`. Getting this wrong surfaces resolved 2025 markets
+ *   at the top of search with no error anywhere.
+ * - **Pagination is `page=N`, 1-based** — there is no cursor. Response carries
+ *   `pagination: { hasMore, totalResults }` instead of a `next_cursor`.
+ * - **`limit_per_type` clamps at 50**; asking for 100 returns 50.
+ * - **Sort and range filters do nothing here.** `order`, `ascending` and
+ *   `volume_min` are all ignored — same first result with or without them.
+ *
+ * Events come back in the same shape as the listing endpoints, nested markets
+ * included, so they render through `MarketCard` unchanged.
+ */
+export async function searchEvents(params: SearchEventsParams): Promise<SearchPage<GammaEvent>> {
+  const page = Math.max(1, Math.trunc(params.page ?? 1));
+  const query = buildQuery({
+    q: params.query,
+    limit_per_type: Math.min(params.limit ?? SEARCH_PAGE_SIZE, SEARCH_MAX_LIMIT),
+    page,
+    events_status: "active",
+  });
+
+  const data = await gammaFetch<{
+    events?: GammaEvent[];
+    pagination?: { hasMore?: boolean; totalResults?: number };
+  }>(`/public-search?${query}`);
+
+  return {
+    items: data.events ?? [],
+    page,
+    hasMore: data.pagination?.hasMore ?? false,
+    totalResults: data.pagination?.totalResults ?? 0,
+  };
+}
+
+export type CachedSearchResult =
+  | { ok: true; generatedAt: string; items: GammaEvent[]; page: number; hasMore: boolean; totalResults: number }
+  | { ok: false; error: string; status: number };
+
+/**
+ * Cached search — same ~30-60s policy and the same
+ * errors-as-data contract as `getCachedEvents` (a `GammaApiError` thrown
+ * across a `"use cache"` boundary stops passing `instanceof`; see that
+ * function's note).
+ *
+ * The query is part of the cache key, so this trades an unbounded key space
+ * for repeat-search hits. That's the right way round: popular queries are
+ * exactly what a cache should absorb, and the entries expire in five minutes.
+ */
+export async function getCachedSearch(params: SearchEventsParams): Promise<CachedSearchResult> {
+  "use cache";
+  cacheLife({ stale: 30, revalidate: 60, expire: 300 });
+  cacheTag("gamma:search");
+
+  try {
+    const page = await searchEvents(params);
+    return { ok: true, generatedAt: new Date().toISOString(), ...page };
+  } catch (error) {
+    if (error instanceof GammaApiError) {
+      return { ok: false, error: error.message, status: error.status };
+    }
+    throw error;
+  }
 }
 
 /** Fetches one market by slug, for the market detail page. Returns null on 404. */

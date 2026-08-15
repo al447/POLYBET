@@ -93,6 +93,24 @@ describe("range filters", () => {
     expect(lastParams()).toMatchObject({ volumeMin: 1_000_000, liquidityMin: 50_000 });
   });
 
+  // 🚩 `closed: false` does not mean "not ended" — Gamma leaves expired events
+  // open. Without this bound the "Ending soon" sort returned 24 of 24
+  // already-ended markets.
+  it("always excludes already-ended markets, even with no filters set", async () => {
+    await call();
+
+    expect(String(lastParams().endDateMin)).toMatch(/T\d{2}:00:00\.000Z$/);
+  });
+
+  it("keeps the ended-market bound alongside an ending preset", async () => {
+    // Both bounds together are what makes "ending in 7 days" mean "between now
+    // and 7 days" rather than "any time before then, including last year".
+    await call("?ending=7d");
+
+    expect(lastParams().endDateMin).toBeDefined();
+    expect(lastParams().endDateMax).toBeDefined();
+  });
+
   it("turns an ending preset into a day-quantised endDateMax", async () => {
     await call("?ending=7d");
 

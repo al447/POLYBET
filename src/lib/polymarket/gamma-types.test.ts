@@ -7,8 +7,10 @@ import {
   EVENT_SORTS,
   LIQUIDITY_FILTERS,
   VOLUME_FILTERS,
+  endingAfter,
   endingBefore,
   isEventSortId,
+  isLiveEvent,
   isVolumeFilterId,
   resolveEndingFilter,
   resolveLiquidityFilter,
@@ -123,5 +125,54 @@ describe("endingBefore", () => {
     const lateEvening = endingBefore(7, new Date("2026-08-15T23:58:00.000Z"));
 
     expect(justAfterMidnight).toBe(lateEvening);
+  });
+});
+
+describe("endingAfter", () => {
+  it("floors to the start of the current UTC hour", () => {
+    expect(endingAfter(new Date("2026-08-15T14:42:40.123Z"))).toBe("2026-08-15T14:00:00.000Z");
+  });
+
+  it("returns the same bound for the whole hour, keeping the cache key stable", () => {
+    expect(endingAfter(new Date("2026-08-15T14:00:00.000Z"))).toBe(
+      endingAfter(new Date("2026-08-15T14:59:59.999Z")),
+    );
+  });
+
+  it("advances to the next hour", () => {
+    expect(endingAfter(new Date("2026-08-15T15:00:00.000Z"))).toBe("2026-08-15T15:00:00.000Z");
+  });
+});
+
+describe("isLiveEvent", () => {
+  const now = new Date("2026-08-15T14:42:40Z");
+
+  it("rejects an event whose end date has passed", () => {
+    // The real case this exists for: search returned "Bitcoin ETF Flows on
+    // August 14?" — ended, but still flagged open by Gamma.
+    expect(isLiveEvent({ endDate: "2026-08-14T22:00:00Z", closed: false }, now)).toBe(false);
+  });
+
+  it("accepts an event ending in the future", () => {
+    expect(isLiveEvent({ endDate: "2026-09-16T00:00:00Z", closed: false }, now)).toBe(true);
+  });
+
+  it("rejects a closed event regardless of its end date", () => {
+    expect(isLiveEvent({ endDate: "2027-01-01T00:00:00Z", closed: true }, now)).toBe(false);
+  });
+
+  it("keeps undated events, unlike the server-side bound", () => {
+    // Real, tradeable markets land here — undated esports tournament winners
+    // with $1M+ volume. `end_date_min` drops them because the API can't
+    // express "null or future"; in memory we can.
+    expect(isLiveEvent({ endDate: undefined, closed: false }, now)).toBe(true);
+  });
+
+  it("keeps an event whose end date is unparseable rather than hiding it", () => {
+    expect(isLiveEvent({ endDate: "not-a-date", closed: false }, now)).toBe(true);
+  });
+
+  it("treats an event ending exactly now as still live", () => {
+    expect(isLiveEvent({ endDate: now.toISOString(), closed: false }, now)).toBe(true);
   });
 });

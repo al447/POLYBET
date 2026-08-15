@@ -7,6 +7,7 @@ import {
   EVENT_SORTS,
   LIQUIDITY_FILTERS,
   VOLUME_FILTERS,
+  endingAfter,
   endingBefore,
   isEndingFilterId,
   isEventSortId,
@@ -110,8 +111,14 @@ export async function GET(request: Request) {
     ascending: sort.ascending,
     volumeMin: volume.min,
     liquidityMin: liquidity.min,
+    // 🚩 Always excludes already-ended markets. `closed: false` above is NOT
+    // enough — Gamma leaves expired events open, and the "Ending soon" sort
+    // returned a full page of dead markets without this. See `endingAfter`.
+    endDateMin: endingAfter(),
     // Quantised to a day boundary inside `endingBefore` so this stays a stable
     // cache key for the whole day rather than changing every millisecond.
+    // Paired with `endDateMin` above, "ending in 7 days" correctly means
+    // "between now and 7 days" rather than "any time before then".
     endDateMax: ending.days === undefined ? undefined : endingBefore(ending.days),
   };
 
