@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 
 import { getCachedEventBySlug } from "@/lib/polymarket/gamma";
 import { MarketTradingSection } from "@/components/markets/market-trading-section";
+import { formatUsd } from "@/lib/format";
 
 /**
  * Market detail page (FR-2.1, implementation.md Step 2.4) — added 2026-08-07
@@ -84,14 +85,10 @@ export default async function MarketDetailPage({
   );
 }
 
-function formatUsd(value: number | string | undefined): string {
-  const num = typeof value === "string" ? Number(value) : value;
-  if (!num || !Number.isFinite(num)) return "$0";
-  if (num >= 1_000_000) return `$${(num / 1_000_000).toFixed(1)}M`;
-  if (num >= 1_000) return `$${(num / 1_000).toFixed(1)}K`;
-  return `$${num.toFixed(0)}`;
-}
-
+/**
+ * Lowercase and prefixed, unlike the shared `formatEndDate` — this one reads
+ * inline in a sentence ("$1.2M vol · ends Nov 3, 2026"), not as a card label.
+ */
 function formatEndDate(endDate: string | undefined): string {
   if (!endDate) return "no end date";
   const date = new Date(endDate);

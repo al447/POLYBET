@@ -78,6 +78,7 @@ A white-label prediction market frontend on the client's own domain. It does **n
 | [srs.md](srs.md) | Requirements — source of truth |
 | [deployment.md](deployment.md) | Operational runbook — deploys, secret rotation, rollback, troubleshooting, limits |
 | [implementation.md](implementation.md) | Step-by-step build plan, prerequisites, acceptance checks |
+| [builder-account-actions.md](builder-account-actions.md) | Open actions on the Polymarket Builder Program account — tier application, fee verification, profile ownership |
 | **CLAUDE.md** (this) | Working context — what's needed to act |
 
 **Commercials:** $550 fixed price, 4 weeks, milestone payments. $125/mo maintenance afterward covering this platform *and* the client's existing site.

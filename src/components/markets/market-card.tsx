@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { snapshotPrice } from "@/lib/polymarket/gamma-types";
 import type { GammaEvent, GammaMarket } from "@/lib/polymarket/gamma-types";
+import { formatEndDate, formatUsd } from "@/lib/format";
 
 /**
  * One event tile for the discovery grid (FR-2.1, FR-2.3).
@@ -104,18 +105,3 @@ function MultiOutcome({ markets }: { markets: GammaMarket[] }) {
   );
 }
 
-function formatUsd(value: number | string | undefined): string {
-  const num = typeof value === "string" ? Number(value) : value;
-  if (!num || !Number.isFinite(num)) return "$0";
-  if (num >= 1_000_000) return `$${(num / 1_000_000).toFixed(1)}M`;
-  if (num >= 1_000) return `$${(num / 1_000).toFixed(1)}K`;
-  return `$${num.toFixed(0)}`;
-}
-
-function formatEndDate(endDate: string | undefined): string {
-  if (!endDate) return "No end date";
-  const date = new Date(endDate);
-  if (Number.isNaN(date.getTime())) return "No end date";
-  if (date.getTime() < Date.now()) return "Ended";
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}

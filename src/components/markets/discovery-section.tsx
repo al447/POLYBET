@@ -1,5 +1,5 @@
 import { getCachedEvents } from "@/lib/polymarket/gamma";
-import { DEFAULT_SORT_ID, TOP_CATEGORIES, resolveSort } from "@/lib/polymarket/gamma-types";
+import { DEFAULT_SORT_ID, resolveSort } from "@/lib/polymarket/gamma-types";
 import { MarketGrid } from "@/components/markets/market-grid";
 
 /**
@@ -9,9 +9,12 @@ import { MarketGrid } from "@/components/markets/market-grid";
  * Component fetching Gamma data itself is fine (the "never call Gamma from
  * the browser" rule is about client-side fetches); this just avoids an
  * unnecessary self-HTTP round trip for the first paint. `MarketGrid` takes it
- * from there client-side for pagination/filtering. Category chips come from
- * the curated `TOP_CATEGORIES` list, not a live tags fetch — see its comment
- * in gamma-types.ts for why.
+ * from there client-side for pagination/filtering.
+ *
+ * Renders the *unfiltered* first page regardless of the URL. When the user
+ * lands on `/?tagId=…`, `MarketGrid` notices the mismatch and refetches once
+ * client-side; reading `searchParams` here and server-rendering the matching
+ * page would remove that round trip, and is the obvious next improvement.
  */
 export async function DiscoverySection() {
   // Must sort by the same default `MarketGrid` starts on. The cursor this
@@ -29,9 +32,7 @@ export async function DiscoverySection() {
     );
   }
 
-  return (
-    <MarketGrid initialEvents={page.items} initialCursor={page.nextCursor} tags={TOP_CATEGORIES} />
-  );
+  return <MarketGrid initialEvents={page.items} initialCursor={page.nextCursor} />;
 }
 
 export function DiscoverySectionSkeleton() {

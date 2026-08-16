@@ -91,6 +91,32 @@ export type GammaMarket = {
   image?: string;
   icon?: string;
   tags?: GammaTag[];
+  /**
+   * Short label for one leg of a multi-market event — "David Crowley (D)"
+   * where `question` is the full "Will David Crowley win the Wisconsin
+   * governor election?". Absent on standalone binary markets.
+   */
+  groupItemTitle?: string;
+};
+
+/**
+ * A comment under an event.
+ *
+ * Verified live 2026-08-16 against
+ * `GET /comments?parent_entity_type=Event&parent_entity_id=45915&limit=2`.
+ * `profile.profileImage` is hosted on the same S3 bucket as market icons, so
+ * it needs no new CSP or `images.remotePatterns` entry.
+ */
+export type GammaComment = {
+  id: string;
+  body: string;
+  createdAt: string;
+  reactionCount?: number;
+  profile?: {
+    name?: string;
+    pseudonym?: string;
+    profileImage?: string;
+  };
 };
 
 export type GammaEvent = {
@@ -399,4 +425,90 @@ export function outcomePriceFractions(market: GammaMarket): number[] {
   return parseGammaJsonArray<string>(market.outcomePrices)
     .map((raw) => Number(raw))
     .map((n) => (Number.isFinite(n) ? n : NaN));
+}
+
+/** One row of an event's outcome list — what the hero and cards rank on. */
+export type RankedOutcome = {
+  label: string;
+  /** 0-100, rounded. `null` when Gamma gave no usable price. */
+  pct: number | null;
+  /** CLOB token for this outcome's "yes" side — the series a chart plots. */
+  tokenId: string | null;
+};
+
+/**
+ * An event's outcomes, best-priced first.
+ *
+ * Gamma models the same idea two different ways and the caller shouldn't have
+ * to care which:
+ *
+ * - **Binary event** (one market): the outcomes are that market's own
+ *   `["Yes","No"]`, priced by `outcomePrices`.
+ * - **Multi-outcome event** (many markets): each *market* is an outcome —
+ *   "Democratic Presidential Nominee 2028" holds 128 of them — labelled by
+ *   `groupItemTitle` and priced by `snapshotPrice`.
+ *
+ * Same browse-snapshot caveat as `snapshotPrice`: fine to rank and display,
+ * never to fill an order against.
+ *
+ * 🚩 **Legs settle individually, long before the event does.** Verified live
+ * 2026-08-16 on "Israel x Iran ceasefire continues through…?": 17 of its 22
+ * markets were `closed: true` with `acceptingOrders: false` and a price of
+ * exactly 1, while the event itself was open with an end date two weeks out.
+ * Ranking without filtering put three settled legs at 100% at the top —
+ * dead markets presented as the headline. Note `active` is useless here: it
+ * was `true` on every one of them. `closed` is the flag that separates them.
+ */
+export function rankEventOutcomes(event: Pick<GammaEvent, "markets">): RankedOutcome[] {
+  const markets = event.markets ?? [];
+  if (markets.length === 0) return [];
+
+  const tradeable = markets.filter((market) => market.closed !== true);
+  if (tradeable.length === 0) return [];
+
+  // Binary-vs-multi is decided on the ORIGINAL market count, not the filtered
+  // one. A 22-leg event with 21 settled legs is still a multi-outcome event;
+  // reading its lone survivor as a Yes/No pair would relabel "August 31" as
+  // "Yes".
+  const rows: RankedOutcome[] =
+    markets.length === 1
+      ? binaryOutcomes(tradeable[0])
+      : tradeable.map((market) => {
+          const price = snapshotPrice(market);
+          return {
+            label: market.groupItemTitle ?? market.question,
+            pct: price !== null ? Math.round(price * 100) : null,
+            tokenId: outcomeTokens(market)[0]?.tokenId ?? null,
+          };
+        });
+
+  return rows.sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
+}
+
+function binaryOutcomes(market: GammaMarket): RankedOutcome[] {
+  const labels = parseGammaJsonArray<string>(market.outcomes);
+  const prices = outcomePriceFractions(market);
+  const tokens = outcomeTokens(market);
+
+  // Falls back to the market's own question when `outcomes` is missing or
+  // unparseable — better a labelled single row than an empty outcome list.
+  if (labels.length === 0) {
+    const price = snapshotPrice(market);
+    return [
+      {
+        label: market.groupItemTitle ?? market.question,
+        pct: price !== null ? Math.round(price * 100) : null,
+        tokenId: tokens[0]?.tokenId ?? null,
+      },
+    ];
+  }
+
+  return labels.map((label, index) => {
+    const price = prices[index];
+    return {
+      label,
+      pct: Number.isFinite(price) ? Math.round(price * 100) : null,
+      tokenId: tokens[index]?.tokenId ?? null,
+    };
+  });
 }

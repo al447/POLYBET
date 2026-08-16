@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { MarketCard } from "@/components/markets/market-card";
 import {
@@ -11,12 +11,15 @@ import {
   EVENT_SORTS,
   LIQUIDITY_FILTERS,
   VOLUME_FILTERS,
+  resolveEndingFilter,
+  resolveLiquidityFilter,
+  resolveSort,
+  resolveVolumeFilter,
 } from "@/lib/polymarket/gamma-types";
 import type {
   EndingFilterId,
   EventSortId,
   GammaEvent,
-  GammaTag,
   LiquidityFilterId,
   VolumeFilterId,
 } from "@/lib/polymarket/gamma-types";
@@ -76,33 +79,45 @@ function isServerRenderedSelection(selection: GridSelection): boolean {
  * 2026-08-15) — leaving them visible would imply they still apply. Sort is a
  * closed set of ids (`EVENT_SORTS`) rather than a free-form order/direction
  * pair, because the two must stay paired to be replayed on a cursor.
+ *
+ * Category selection is NOT here any more — it's the nav bar's second row
+ * (`NavCategories`), which lives in the root layout and so cannot share React
+ * state with this component. The query string is the one thing both can see,
+ * which is why the whole selection is read from and written to the URL below.
  */
 export function MarketGrid({
   initialEvents,
   initialCursor,
-  tags,
 }: {
   initialEvents: GammaEvent[];
   initialCursor: string | null;
-  tags: GammaTag[];
 }) {
+  const router = useRouter();
   const searchParams = useSearchParams();
-  // Seeds from `?tagId=` so links (e.g. the sidebar's Trending topics) land
-  // pre-filtered. When present this costs one client-side refetch replacing
-  // `initialEvents` (which was fetched unfiltered) — a Server Component that
-  // also read `searchParams` could avoid that, left as a fast-follow.
-  const initialTagId = searchParams.get("tagId");
-  // One object rather than five `useState`s so the reset effect has a single
-  // dependency: every one of these invalidates the current cursor, and any
-  // change has to restart from page 1. `sort` starts on the same default
-  // `DiscoverySection` server-rendered with — see `fetchBrowsePage` for why.
-  const [selection, setSelection] = useState<GridSelection>({
-    tagId: initialTagId ? Number(initialTagId) : null,
-    sort: DEFAULT_SORT_ID,
-    volume: DEFAULT_FILTER_ID,
-    liquidity: DEFAULT_FILTER_ID,
-    ending: DEFAULT_FILTER_ID,
-  });
+
+  // Read as individual primitives, not as one `searchParams` object: the memo
+  // below — and the fetch effect keyed on it — must only refire when a value
+  // genuinely changed, and `useSearchParams()` returns a new instance on every
+  // navigation. Each `resolve*` helper falls back to the default on absent or
+  // junk input, so a hand-typed `?sort=banana` degrades to "Top" rather than
+  // sending nonsense to Gamma.
+  const tagIdParam = searchParams.get("tagId");
+  const sortParam = searchParams.get("sort");
+  const volumeParam = searchParams.get("volume");
+  const liquidityParam = searchParams.get("liquidity");
+  const endingParam = searchParams.get("ending");
+
+  const selection = useMemo<GridSelection>(() => {
+    const parsedTagId = tagIdParam ? Number(tagIdParam) : Number.NaN;
+    return {
+      tagId: Number.isFinite(parsedTagId) ? parsedTagId : null,
+      sort: resolveSort(sortParam).id,
+      volume: resolveVolumeFilter(volumeParam).id,
+      liquidity: resolveLiquidityFilter(liquidityParam).id,
+      ending: resolveEndingFilter(endingParam).id,
+    };
+  }, [tagIdParam, sortParam, volumeParam, liquidityParam, endingParam]);
+
   const [results, setResults] = useState<Results>({
     items: initialEvents,
     cursor: initialCursor,
@@ -116,7 +131,28 @@ export function MarketGrid({
   const query = (searchParams.get("q") ?? "").trim();
   const isSearching = query.length > 0;
 
-  const select = (patch: Partial<GridSelection>) => setSelection((prev) => ({ ...prev, ...patch }));
+  // Writes the URL rather than local state, so the nav bar's tabs and these
+  // chips are the same control by two routes. Defaults are deleted rather than
+  // written, which keeps a fully-cleared grid at a bare `/` — the same shape
+  // `isServerRenderedSelection` matches, so clearing everything still skips
+  // the redundant first fetch.
+  const select = useCallback(
+    (patch: Partial<GridSelection>) => {
+      const next = { ...selection, ...patch };
+      const params = new URLSearchParams(searchParams.toString());
+
+      setParam(params, "tagId", next.tagId === null ? null : String(next.tagId));
+      setParam(params, "sort", next.sort === DEFAULT_SORT_ID ? null : next.sort);
+      setParam(params, "volume", next.volume === DEFAULT_FILTER_ID ? null : next.volume);
+      setParam(params, "liquidity", next.liquidity === DEFAULT_FILTER_ID ? null : next.liquidity);
+      setParam(params, "ending", next.ending === DEFAULT_FILTER_ID ? null : next.ending);
+
+      // Not named `query` — that's the search term a few lines up.
+      const queryString = params.toString();
+      router.replace(queryString ? `/?${queryString}` : "/", { scroll: false });
+    },
+    [router, searchParams, selection],
+  );
 
   // 🚩 The whole selection goes on every request, paginated or not. Gamma
   // binds a keyset cursor to the sort that produced it and 422s on a mismatch,
@@ -236,50 +272,34 @@ export function MarketGrid({
           )}
         </p>
       ) : (
-        <>
-          <div className="flex flex-wrap gap-2">
-            <CategoryChip
-              label="All"
-              active={selection.tagId === null}
-              onClick={() => select({ tagId: null })}
-            />
-            {tags.map((tag) => (
-              <CategoryChip
-                key={tag.id}
-                label={tag.label ?? tag.slug ?? tag.id}
-                active={selection.tagId === Number(tag.id)}
-                onClick={() => select({ tagId: Number(tag.id) })}
-              />
-            ))}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-            <ChipGroup
-              label="Sort"
-              options={EVENT_SORTS}
-              value={selection.sort}
-              onSelect={(sort) => select({ sort })}
-            />
-            <ChipGroup
-              label="Volume"
-              options={VOLUME_FILTERS}
-              value={selection.volume}
-              onSelect={(volume) => select({ volume })}
-            />
-            <ChipGroup
-              label="Liquidity"
-              options={LIQUIDITY_FILTERS}
-              value={selection.liquidity}
-              onSelect={(liquidity) => select({ liquidity })}
-            />
-            <ChipGroup
-              label="Ending in"
-              options={ENDING_FILTERS}
-              value={selection.ending}
-              onSelect={(ending) => select({ ending })}
-            />
-          </div>
-        </>
+        // Category chips moved to the nav bar's second row. What's left are the
+        // sort and range filters, which have no home up there.
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          <ChipGroup
+            label="Sort"
+            options={EVENT_SORTS}
+            value={selection.sort}
+            onSelect={(sort) => select({ sort })}
+          />
+          <ChipGroup
+            label="Volume"
+            options={VOLUME_FILTERS}
+            value={selection.volume}
+            onSelect={(volume) => select({ volume })}
+          />
+          <ChipGroup
+            label="Liquidity"
+            options={LIQUIDITY_FILTERS}
+            value={selection.liquidity}
+            onSelect={(liquidity) => select({ liquidity })}
+          />
+          <ChipGroup
+            label="Ending in"
+            options={ENDING_FILTERS}
+            value={selection.ending}
+            onSelect={(ending) => select({ ending })}
+          />
+        </div>
       )}
 
       {error ? (
@@ -310,6 +330,12 @@ export function MarketGrid({
       ) : null}
     </div>
   );
+}
+
+/** Sets a query param, or removes it entirely when the value is the default. */
+function setParam(params: URLSearchParams, key: string, value: string | null) {
+  if (value === null) params.delete(key);
+  else params.set(key, value);
 }
 
 /** Fetches JSON, surfacing the route's own `error` message when there is one. */

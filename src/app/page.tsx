@@ -4,6 +4,7 @@ import { GeoBanner } from "@/components/geo/geo-banner";
 import { ReadinessPanel } from "@/components/status/readiness-panel";
 import { RightSidebar } from "@/components/layout/right-sidebar";
 import { DiscoverySection, DiscoverySectionSkeleton } from "@/components/markets/discovery-section";
+import { FeaturedHero, FeaturedHeroSkeleton } from "@/components/markets/featured-hero";
 
 /**
  * Home page: sign in, provision a Deposit Wallet, add funds, browse markets.
@@ -26,19 +27,21 @@ export default function Home() {
   return (
     <div className="mx-auto w-full max-w-7xl flex-1 px-6 py-12 lg:grid lg:grid-cols-[1fr_360px] lg:items-start lg:gap-6">
       <main>
-        <header className="mb-8">
-          <h1 className="text-2xl font-semibold tracking-tight">
-            Prediction Markets
-          </h1>
-          <p className="mt-1 text-sm text-zinc-500">
-            Trade on Polymarket liquidity. Your wallet, your keys — deposits
-            and positions stay under your own signer.
-          </p>
-        </header>
-
+        {/* Jurisdiction notice stays first — a close-only user has to see it
+            before the trading surface, not below a promotional panel. */}
         <div className="mb-6">
           <Suspense fallback={null}>
             <GeoBanner />
+          </Suspense>
+        </div>
+
+        {/* The hero is the page's visual heading now, so the h1 is here and
+            hidden. `FeaturedHero` returns null if Gamma is unavailable, which
+            is why the heading doesn't live inside it. */}
+        <h1 className="sr-only">Prediction markets</h1>
+        <div className="mb-8">
+          <Suspense fallback={<FeaturedHeroSkeleton />}>
+            <FeaturedHero />
           </Suspense>
         </div>
 

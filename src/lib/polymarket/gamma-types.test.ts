@@ -12,6 +12,7 @@ import {
   isEventSortId,
   isLiveEvent,
   isVolumeFilterId,
+  rankEventOutcomes,
   resolveEndingFilter,
   resolveLiquidityFilter,
   resolveSort,
@@ -174,5 +175,114 @@ describe("isLiveEvent", () => {
 
   it("treats an event ending exactly now as still live", () => {
     expect(isLiveEvent({ endDate: now.toISOString(), closed: false }, now)).toBe(true);
+  });
+});
+
+/**
+ * Outcome ranking (the hero's left column, and anything else that needs "what
+ * are the top few outcomes and what are they trading at").
+ *
+ * The interesting part is that Gamma expresses "outcome" two incompatible
+ * ways — one market with a Yes/No pair, or many markets each standing for one
+ * outcome — and callers must not have to branch on it.
+ */
+describe("rankEventOutcomes", () => {
+  const binaryMarket = {
+    id: "1",
+    conditionId: "0x1",
+    slug: "bitcoin-up",
+    question: "Will Bitcoin be up today?",
+    outcomes: '["Yes","No"]',
+    outcomePrices: '["0.62","0.39"]',
+    clobTokenIds: '["tok-yes","tok-no"]',
+    volume: "1",
+    volumeNum: 1,
+    liquidity: "1",
+    liquidityNum: 1,
+    active: true,
+    closed: false,
+  };
+
+  function leg(id: string, title: string, price: string, token: string) {
+    return {
+      ...binaryMarket,
+      id,
+      groupItemTitle: title,
+      question: `Will ${title} win?`,
+      outcomePrices: `["${price}","${(1 - Number(price)).toFixed(2)}"]`,
+      clobTokenIds: `["${token}","${token}-no"]`,
+    };
+  }
+
+  it("reads a binary event's Yes/No off the single market", () => {
+    expect(rankEventOutcomes({ markets: [binaryMarket] })).toEqual([
+      { label: "Yes", pct: 62, tokenId: "tok-yes" },
+      { label: "No", pct: 39, tokenId: "tok-no" },
+    ]);
+  });
+
+  it("treats each market as one outcome on a multi-market event", () => {
+    const ranked = rankEventOutcomes({
+      markets: [leg("2", "Tom Tiffany (R)", "0.24", "tok-t"), leg("3", "David Crowley (D)", "0.77", "tok-c")],
+    });
+
+    // Sorted by price, and labelled with the short `groupItemTitle` rather
+    // than the full question.
+    expect(ranked.map((row) => row.label)).toEqual(["David Crowley (D)", "Tom Tiffany (R)"]);
+    expect(ranked[0]).toEqual({ label: "David Crowley (D)", pct: 77, tokenId: "tok-c" });
+  });
+
+  it("sorts unpriced outcomes last instead of treating them as 0%", () => {
+    const unpriced = { ...leg("4", "Unpriced", "0.10", "tok-u"), outcomePrices: "[]", bestBid: 0, bestAsk: 1 };
+    const ranked = rankEventOutcomes({
+      markets: [unpriced, leg("5", "Priced", "0.05", "tok-p")],
+    });
+
+    expect(ranked[0].label).toBe("Priced");
+    expect(ranked[1].pct).toBeNull();
+  });
+
+  it("returns an empty list for an event with no markets", () => {
+    expect(rankEventOutcomes({ markets: [] })).toEqual([]);
+  });
+
+  it("drops legs that have already settled inside a still-open event", () => {
+    // Real shape, verified 2026-08-16 on the Israel/Iran ceasefire event: 17
+    // of 22 legs closed at exactly 1.00 while the event stayed open. Without
+    // this filter the hero led with three settled 100% outcomes.
+    const settled = {
+      ...leg("6", "July 18", "0.5", "tok-j18"),
+      closed: true,
+      outcomePrices: '["1","0"]',
+    };
+    const ranked = rankEventOutcomes({
+      markets: [settled, leg("7", "August 31", "0.93", "tok-a31")],
+    });
+
+    expect(ranked).toEqual([{ label: "August 31", pct: 93, tokenId: "tok-a31" }]);
+  });
+
+  it("still labels the survivor as an outcome, not a Yes/No pair", () => {
+    // One market left after filtering must not be mistaken for a binary
+    // market — the branch keys off the original count for this reason.
+    const settled = { ...leg("8", "July 18", "0.5", "tok-j18"), closed: true };
+    const ranked = rankEventOutcomes({
+      markets: [settled, leg("9", "August 31", "0.93", "tok-a31")],
+    });
+
+    expect(ranked.map((row) => row.label)).toEqual(["August 31"]);
+  });
+
+  it("returns nothing when every leg has settled", () => {
+    // The hero skips such an event entirely rather than featuring dead markets.
+    const settled = { ...leg("10", "July 18", "0.5", "tok-j18"), closed: true };
+    expect(rankEventOutcomes({ markets: [settled, { ...settled, id: "11" }] })).toEqual([]);
+  });
+
+  it("falls back to the question when a binary market has no parseable outcomes", () => {
+    const ranked = rankEventOutcomes({
+      markets: [{ ...binaryMarket, outcomes: "not json", bestBid: 0.5, bestAsk: 0.54 }],
+    });
+    expect(ranked).toEqual([{ label: "Will Bitcoin be up today?", pct: 52, tokenId: "tok-yes" }]);
   });
 });

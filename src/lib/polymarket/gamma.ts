@@ -5,6 +5,7 @@ import { cacheLife, cacheTag } from "next/cache";
 import { POLYMARKET_ENDPOINTS } from "./config";
 import { GammaApiError, SEARCH_MAX_LIMIT, SEARCH_PAGE_SIZE } from "./gamma-types";
 import type {
+  GammaComment,
   GammaEvent,
   GammaMarket,
   GammaTag,
@@ -43,6 +44,7 @@ import type {
 
 export { GammaApiError, parseGammaJsonArray } from "./gamma-types";
 export type {
+  GammaComment,
   GammaEvent,
   GammaMarket,
   GammaTag,
@@ -270,6 +272,46 @@ export async function getCachedEvents(params: ListEventsParams = {}): Promise<Ca
     }
     throw error;
   }
+}
+
+/**
+ * Comments under an event — the community line in the featured hero.
+ *
+ * 🚩 The endpoint takes a **numeric event id**, not a slug, and needs both
+ * `parent_entity_type=Event` and `parent_entity_id`. Verified live 2026-08-16;
+ * it returns a bare array, not the `{events, next_cursor}` envelope the
+ * listing routes use.
+ *
+ * There is no news feed to pair this with: Gamma has no `/news` route (404)
+ * and no `news` field on an event. Comments are the only first-party
+ * commentary available, which is why the hero shows them where the reference
+ * design shows headlines.
+ *
+ * Returns `[]` on any failure — a missing comment costs the hero one line,
+ * and is never worth failing a page render over.
+ */
+export async function listEventComments(eventId: string, limit = 2): Promise<GammaComment[]> {
+  const query = buildQuery({
+    parent_entity_type: "Event",
+    parent_entity_id: eventId,
+    limit,
+  });
+
+  try {
+    const data = await gammaFetch<GammaComment[]>(`/comments?${query}`);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Cached comments — slower-moving than prices, so a longer window than events. */
+export async function getCachedEventComments(eventId: string, limit = 2): Promise<GammaComment[]> {
+  "use cache";
+  cacheLife({ stale: 60, revalidate: 300, expire: 900 });
+  cacheTag(`gamma:comments:${eventId}`);
+
+  return listEventComments(eventId, limit);
 }
 
 // No cached "list all categories" wrapper here — see `TOP_CATEGORIES` in

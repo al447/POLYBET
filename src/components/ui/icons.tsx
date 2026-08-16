@@ -5,7 +5,8 @@ import type { SVGProps } from "react";
  *
  * The Worker bundle is already ~4.79 MiB gzipped against a 10 MiB paid cap
  * (see CLAUDE.md Traps), so a new icon dependency is a real cost, not a
- * convenience. These are the ~12 glyphs the nav bar and sidebar need.
+ * convenience. These are the glyphs the nav bar, its menus and the sidebar
+ * need — nothing speculative.
  */
 
 type IconProps = SVGProps<SVGSVGElement>;
@@ -126,6 +127,96 @@ export function TrendingIcon(props: IconProps) {
     <svg {...base} {...props}>
       <path d="M3 17l6-6 4 4 8-8" />
       <path d="M15 7h6v6" />
+    </svg>
+  );
+}
+
+export function ChevronDownIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
+
+export function ChevronLeftIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="m15 6-6 6 6 6" />
+    </svg>
+  );
+}
+
+export function ChevronRightIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="m9 6 6 6-6 6" />
+    </svg>
+  );
+}
+
+export function CloseIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M6 6l12 12M18 6 6 18" />
+    </svg>
+  );
+}
+
+/** Copy trading — one trader, one follower. */
+export function UsersIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="9" cy="8" r="3.5" />
+      <path d="M3 20a6 6 0 0 1 12 0" />
+      <path d="M16.5 5.3a3.5 3.5 0 0 1 0 6.4M18 14.5a6 6 0 0 1 3 5.5" />
+    </svg>
+  );
+}
+
+/** Predict AI. */
+export function SparkleIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M11 3l1.7 4.3L17 9l-4.3 1.7L11 15l-1.7-4.3L5 9l4.3-1.7Z" />
+      <path d="M18 14.5l.8 1.9 1.9.8-1.9.8-.8 1.9-.8-1.9-1.9-.8 1.9-.8Z" strokeWidth={1.25} />
+    </svg>
+  );
+}
+
+export function HelpIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.6 9.4a2.5 2.5 0 1 1 3.2 2.4c-.6.2-1 .8-1 1.4v.3" />
+      <path d="M11.9 16.8h.01" strokeWidth={2.25} />
+    </svg>
+  );
+}
+
+/** Hot topics. */
+export function FlameIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M12 21a6 6 0 0 0 6-6c0-4.2-4.2-5.6-4.2-9.6 0 0-3.3 1.6-3.3 5.3 0 1.3-1.1 2-1.9 1.2C7.7 12 6 13.4 6 15a6 6 0 0 0 6 6Z" />
+    </svg>
+  );
+}
+
+export function FilterIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M4 7h9M17 7h3M4 17h3M11 17h9" />
+      <circle cx="15" cy="7" r="2" />
+      <circle cx="9" cy="17" r="2" />
+    </svg>
+  );
+}
+
+export function BookmarkIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M6 4h12v17l-6-4-6 4Z" />
     </svg>
   );
 }
