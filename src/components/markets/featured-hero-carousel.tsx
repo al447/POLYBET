@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
 import { ChevronLeftIcon, ChevronRightIcon, PauseIcon, PlayIcon } from "@/components/ui/icons";
 
@@ -35,6 +35,50 @@ import { ChevronLeftIcon, ChevronRightIcon, PauseIcon, PlayIcon } from "@/compon
 
 /** Slow enough to read an outcome list and a chart before it moves on. */
 const AUTOPLAY_MS = 7000;
+
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+
+/*
+ * External-store subscriptions.
+ *
+ * Declared at module scope so their identities are stable —
+ * `useSyncExternalStore` resubscribes whenever `subscribe` changes, so an
+ * inline arrow would tear down and re-add the listener on every render.
+ *
+ * The third argument is the **server** snapshot, which is why these can't just
+ * read `window`/`document` during render: neither exists while the hero is
+ * being server-rendered. Both defaults are the permissive answer (visible, no
+ * motion preference), so the client only ever corrects *away* from autoplay.
+ */
+
+function subscribeToVisibility(onChange: () => void): () => void {
+  document.addEventListener("visibilitychange", onChange);
+  return () => document.removeEventListener("visibilitychange", onChange);
+}
+
+function subscribeToReducedMotion(onChange: () => void): () => void {
+  const query = window.matchMedia(REDUCED_MOTION_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+/** True while this tab is in the foreground. */
+function useTabVisible(): boolean {
+  return useSyncExternalStore(
+    subscribeToVisibility,
+    () => !document.hidden,
+    () => true,
+  );
+}
+
+/** True when the viewer has asked the OS for less motion. */
+function usePrefersReducedMotion(): boolean {
+  return useSyncExternalStore(
+    subscribeToReducedMotion,
+    () => window.matchMedia(REDUCED_MOTION_QUERY).matches,
+    () => false,
+  );
+}
 
 export type HeroChartSeries = {
   /** Pre-rendered SVG path in the viewBox below. */
@@ -79,8 +123,13 @@ export function FeaturedHeroCarousel({ slides }: { slides: HeroSlide[] }) {
   const [playing, setPlaying] = useState(true);
   /** Transient: pointer or keyboard focus is inside the hero right now. */
   const [hovered, setHovered] = useState(false);
-  const [tabVisible, setTabVisible] = useState(true);
-  const [reducedMotion, setReducedMotion] = useState(false);
+
+  // Both of these are external stores, read through `useSyncExternalStore`
+  // rather than an effect that calls setState. That isn't only lint
+  // appeasement: setting state in an effect body renders twice on every mount
+  // and tears during hydration, which this hook exists to avoid.
+  const tabVisible = useTabVisible();
+  const reducedMotion = usePrefersReducedMotion();
 
   const count = slides.length;
 
@@ -92,23 +141,6 @@ export function FeaturedHeroCarousel({ slides }: { slides: HeroSlide[] }) {
     },
     [count],
   );
-
-  // Read after mount, not during render: `window.matchMedia` doesn't exist on
-  // the server, and initialising state from it would break hydration.
-  useEffect(() => {
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    setReducedMotion(query.matches);
-
-    const handleChange = (event: MediaQueryListEvent) => setReducedMotion(event.matches);
-    query.addEventListener("change", handleChange);
-    return () => query.removeEventListener("change", handleChange);
-  }, []);
-
-  useEffect(() => {
-    const handleVisibility = () => setTabVisible(!document.hidden);
-    document.addEventListener("visibilitychange", handleVisibility);
-    return () => document.removeEventListener("visibilitychange", handleVisibility);
-  }, []);
 
   const rotating = playing && !hovered && tabVisible && !reducedMotion && count > 1;
 

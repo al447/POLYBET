@@ -70,17 +70,22 @@ export async function GET() {
        *
        * Included because this is the route that exists to make auth
        * preconditions visible, and acceptance has a failure mode with the same
-       * shape as the identity-token one above: the flag is read off the
-       * identity token, which is minted at login. A user who has just accepted
-       * may still read as `accepted: false` here until that token rotates —
-       * and without this field, that presents as `/api/orders` inexplicably
-       * returning 451 to someone who definitely accepted.
+       * shape as the identity-token one above: the accepted version rides in
+       * the identity token, which is minted at login. A user who has just
+       * accepted reads as `accepted: false` here until that token rotates
+       * (`refreshUser()` in `AcceptanceGate`) — and without these fields, that
+       * presents as `/api/orders` inexplicably returning 451 to someone who
+       * definitely accepted.
+       *
+       * There is deliberately no `providerFlag` here any more. Privy's
+       * `hasAcceptedTerms` is hardcoded `false` by the identity-token parser,
+       * so reporting it would show every user as not-accepted and send whoever
+       * is debugging down exactly the wrong path — see `userNeedsAcceptance`.
        */
       legal: {
         accepted: !userNeedsAcceptance(user, ACCEPTANCE_VERSION),
         acceptedVersion: user.legalVersion,
         currentVersion: ACCEPTANCE_VERSION,
-        providerFlag: user.hasAcceptedTerms,
       },
     },
     { headers: { "cache-control": "no-store" } },

@@ -55,17 +55,23 @@ export function createPrivyProvider(env: ServerEnv): AuthProvider {
         const wallet = findEmbeddedWallet(user);
         if (!wallet) return null;
 
-        const acceptance = readAcceptance(
-          readCustomMetadata(user),
-          readHasAcceptedTerms(user),
-        );
+        /**
+         * 🚩 Only the *version* is recoverable here. `custom_metadata` is a
+         * real claim on the identity token, but `has_accepted_terms` is not —
+         * `parseUserFromIdentityTokenPayload` in `@privy-io/node` constructs
+         * its `User` with a literal `has_accepted_terms: false`. Reading it
+         * would hand every caller a permanent `false`, which is exactly how
+         * this gate once rejected every order ever placed. `readAcceptance` is
+         * told so explicitly rather than being passed a value scraped off the
+         * token.
+         */
+        const acceptance = readAcceptance(readCustomMetadata(user), false);
 
         return {
           userId,
           email: findEmail(user),
           signerAddress: wallet.address,
           walletId: wallet.id,
-          hasAcceptedTerms: acceptance.hasAcceptedTerms,
           legalVersion: acceptance.version,
         };
       } catch {
@@ -120,11 +126,6 @@ function readCustomMetadata(user: unknown): Record<string, string | number | boo
     customMetadata?: Record<string, string | number | boolean>;
   };
   return u.custom_metadata ?? u.customMetadata;
-}
-
-function readHasAcceptedTerms(user: unknown): boolean {
-  const u = user as { has_accepted_terms?: boolean; hasAcceptedTerms?: boolean };
-  return u.has_accepted_terms ?? u.hasAcceptedTerms ?? false;
 }
 
 function readUserId(claims: unknown): string | null {

@@ -1,9 +1,14 @@
+import { Suspense } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getCachedEventBySlug } from "@/lib/polymarket/gamma";
 import { MarketTradingSection } from "@/components/markets/market-trading-section";
+import {
+  MarketChartSection,
+  MarketChartSkeleton,
+} from "@/components/markets/market-chart-section";
 import { formatUsd } from "@/lib/format";
 
 /**
@@ -79,6 +84,15 @@ export default async function MarketDetailPage({
       {event.description ? (
         <p className="mb-8 max-w-2xl text-base whitespace-pre-line text-zinc-400">{event.description}</p>
       ) : null}
+
+      {/* Own Suspense boundary: the chart waits on up to five CLOB calls, and
+          the outcome list plus order ticket below shouldn't be held back by
+          them. `MarketChartSection` renders nothing when there's no history. */}
+      <div className="mb-6">
+        <Suspense fallback={<MarketChartSkeleton />}>
+          <MarketChartSection event={event} />
+        </Suspense>
+      </div>
 
       <MarketTradingSection event={event} />
     </div>

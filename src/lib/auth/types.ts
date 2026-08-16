@@ -17,12 +17,16 @@ export type AuthenticatedUser = {
   /** Provider-side wallet id, needed to build a Signer. */
   walletId: string;
   /**
-   * Legal acceptance (FR-6.4). Read from the session, so it costs nothing on
-   * the common path — see `lib/legal/acceptance.ts` for why it takes two
-   * fields rather than one boolean.
+   * Revision of the legal documents this user accepted, or null if none is
+   * recorded (FR-6.4). Read from the session, so it costs nothing on the
+   * common path.
+   *
+   * 🚩 There is deliberately **no `hasAcceptedTerms` here.** Privy's boolean
+   * cannot be recovered from an identity token — the SDK's parser hardcodes it
+   * to `false` — so a field for it would only ever carry a lie that something
+   * would eventually gate on. The version record is the server-side source of
+   * truth; see `userNeedsAcceptance`.
    */
-  hasAcceptedTerms: boolean;
-  /** Revision of the legal documents this user accepted, or null if none recorded. */
   legalVersion: string | null;
 };
 

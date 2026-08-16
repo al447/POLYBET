@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchPriceHistory, priceRange, toSparklinePath } from "./price-history";
+import {
+  PRICE_RANGES,
+  fetchPriceHistory,
+  isPriceRangeId,
+  priceRange,
+  resolvePriceRange,
+  toSparklinePath,
+} from "./price-history";
 import type { PricePoint } from "./price-history";
 
 /** Trimmed from a real response — verified live 2026-08-16, interval=1w&fidelity=60. */
@@ -121,12 +128,21 @@ describe("fetchPriceHistory", () => {
   });
 
   it("sends the token id as `market`, plus interval and fidelity", async () => {
-    const spy = vi.fn(async () => new Response(JSON.stringify({ history: [] }), { status: 200 }));
-    vi.stubGlobal("fetch", spy);
+    // Captured rather than read back off `spy.mock.calls`: the mock declares no
+    // parameters, so its calls tuple types as `[]` and indexing it doesn't
+    // compile.
+    let requested = "";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        requested = input;
+        return new Response(JSON.stringify({ history: [] }), { status: 200 });
+      }),
+    );
 
     await fetchPriceHistory({ tokenId: "987", interval: "1d", fidelity: 15 });
 
-    const url = new URL(spy.mock.calls[0][0] as string);
+    const url = new URL(requested);
     expect(url.pathname).toBe("/prices-history");
     expect(url.searchParams.get("market")).toBe("987");
     expect(url.searchParams.get("interval")).toBe("1d");
@@ -160,5 +176,102 @@ describe("fetchPriceHistory", () => {
       }),
     );
     await expect(fetchPriceHistory({ tokenId: "123" })).resolves.toEqual([]);
+  });
+});
+
+/**
+ * Range presets.
+ *
+ * The reason these are a closed set rather than a free interval/fidelity pair
+ * is measured, not stylistic: the CLOB returns an EMPTY history with a 200
+ * when the two don't suit each other (`1w` + `fidelity=1` → 0 points,
+ * `1m` + `fidelity=5` → 0 points, verified 2026-08-16). A caller that could
+ * combine them freely could silently blank the chart.
+ */
+describe("PRICE_RANGES", () => {
+  it("pairs every interval with a fidelity that returns data", () => {
+    // Locks in the measured pairings. If one of these is ever changed, it must
+    // be re-probed against the live API first — see the table on PRICE_RANGES.
+    expect(PRICE_RANGES.map((range) => [range.interval, range.fidelity])).toEqual([
+      ["1h", 1],
+      ["6h", 5],
+      ["1d", 5],
+      ["1w", 60],
+      ["1m", 60],
+      ["max", 60],
+    ]);
+  });
+
+  it("resolves known ids and falls back to the default on anything else", () => {
+    expect(resolvePriceRange("1h").interval).toBe("1h");
+    expect(resolvePriceRange("max").fidelity).toBe(60);
+    expect(resolvePriceRange(null).id).toBe("1w");
+    expect(resolvePriceRange("nonsense").id).toBe("1w");
+  });
+
+  it("narrows wire values for the API route", () => {
+    expect(isPriceRangeId("6h")).toBe(true);
+    expect(isPriceRangeId("6H")).toBe(false);
+    expect(isPriceRangeId("2w")).toBe(false);
+  });
+});
+
+describe("toSparklinePath with a shared time axis", () => {
+  it("positions points by timestamp, not by index", () => {
+    // A series that only covers the back half of the window must be drawn in
+    // the back half — not stretched across the full width. Without this, a
+    // market added late slides its whole history leftward against the others.
+    const late = toSparklinePath(
+      [
+        { t: 150, p: 0.5 },
+        { t: 200, p: 0.5 },
+      ],
+      100,
+      50,
+      { domain: { min: 0, max: 1 }, timeDomain: { start: 100, end: 200 } },
+    );
+
+    expect(late).toBe("M50,25 L100,25");
+  });
+
+  it("keeps two series with different point counts aligned in time", () => {
+    const options = { domain: { min: 0, max: 1 }, timeDomain: { start: 0, end: 100 } };
+    const dense = toSparklinePath(
+      [
+        { t: 0, p: 0.5 },
+        { t: 50, p: 0.5 },
+        { t: 100, p: 0.5 },
+      ],
+      100,
+      50,
+      options,
+    );
+    const sparse = toSparklinePath(
+      [
+        { t: 0, p: 0.5 },
+        { t: 100, p: 0.5 },
+      ],
+      100,
+      50,
+      options,
+    );
+
+    // Both start at x=0 and end at x=100 despite having 3 and 2 points.
+    expect(dense.startsWith("M0,")).toBe(true);
+    expect(dense.endsWith("L100,25")).toBe(true);
+    expect(sparse).toBe("M0,25 L100,25");
+  });
+
+  it("falls back to even index spacing when no time domain is given", () => {
+    const path = toSparklinePath(
+      [
+        { t: 1000, p: 0.5 },
+        { t: 9999, p: 0.5 },
+      ],
+      100,
+      50,
+      { domain: { min: 0, max: 1 } },
+    );
+    expect(path).toBe("M0,25 L100,25");
   });
 });

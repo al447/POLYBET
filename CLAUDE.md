@@ -2,7 +2,7 @@
 
 Working context for the Polymarket Integration Platform. **Keep this file current** — see [Maintenance Protocol](#maintenance-protocol) at the bottom.
 
-> **Last updated:** 2026-08-15 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
+> **Last updated:** 2026-08-16 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
 >
 > **Deploy status — updated 2026-08-09.** First deploy **attempted and rejected 2026-08-05** — the client's Cloudflare account was on **Workers Free** and the upload failed with `exceeded the size limit of 3 MiB [code: 10027]`. **Resolved 2026-08-09: the client upgraded to Workers Paid, and a deploy has now succeeded** on the default `*.workers.dev` subdomain. All six request-time secrets are pushed (`wrangler secret put` — the four `POLYMARKET_BUILDER_*`, `PRIVY_APP_SECRET`, `POLYGON_RPC_URL`), and both build-time vars (`NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_POLYMARKET_BUILDER_CODE`) were exported before this build — so the deployed instance should be running in **live mode** with login and builder attribution both wired, not mock mode. **Not yet done:** the custom domain is not wired (still on `*.workers.dev`, not `POLYBETS.XYZ`), and none of [deployment.md §5](deployment.md#5-post-deploy-verification)'s 9 post-deploy checks (signing spike, health, geoblock, security headers, login end-to-end, etc.) have actually been run or recorded against this deployment — the config being in place is not the same as confirming it works. Run §5 before treating this as verified.
 >
@@ -28,6 +28,7 @@ src/
     api/orders             pre-trade authorization — NOT order placement, see Traps
     api/markets            Gamma event-list proxy, cached (FR-2.1/2.2/2.5) — sort + range filters
     api/markets/search     Gamma /public-search proxy, cached (FR-2.4) — page-numbered, NOT cursor
+    api/markets/price-history  CLOB /prices-history proxy, cached — takes a range ID, all series in one call
     api/spike/signing      Workers signing diagnostic (Milestone 1 gate)
   lib/
     env.ts                 request-time secrets via getCloudflareContext
@@ -35,6 +36,9 @@ src/
     auth/{types,privy,session}.ts
     polymarket/gamma-types.ts                   types + parsing, NOT server-only (client-safe)
     polymarket/{config,fees,builder,gamma}.ts   clob.ts removed 2026-08-07, was dead code
+    polymarket/price-history-types.ts           PricePoint, PRICE_RANGES, toSparklinePath — client-safe, NOT server-only
+    polymarket/price-history.ts                 CLOB /prices-history fetch + cache (server-only)
+    format.ts                                   formatUsd / formatEndDate / formatRelativeTime — shared, was duplicated 3x
     polymarket/browser-client.ts                client-side signing, balance/approvals (market orders; limit orders pending)
     polymarket/market-data.ts                   unauthenticated public client + order-book WS reducer (Step 3.1, built 2026-08-09)
     polymarket/user-events.ts                   authenticated user-channel subscribe + pure fill/order reducer (Step 3.7, built 2026-08-09)
@@ -48,6 +52,10 @@ src/
     auth/, wallet/, geo/, layout/{nav-bar,nav-search,right-sidebar,privy-auth-area}, ui/{primitives,icons}
     markets/{market-card,market-grid,discovery-section}   Milestone 2, live — cards link to /market/[slug], don't trade inline
     markets/{outcome-list,market-trading-section}         detail-page layout: outcome list + sticky panel, matches Polymarket's own event-page pattern (built 2026-08-07)
+    markets/{market-chart,market-chart-section}           detail-page multi-outcome price chart + range tabs (built 2026-08-16); server fetches the opening range, client refetches on tab change
+    markets/{featured-hero,featured-hero-carousel}        home hero: featured events, price lines, comments (built 2026-08-16); autoplay pauses on hover/focus
+    layout/{nav-menu,nav-categories}                      two-row masthead: hamburger menu + feed/category tabs (built 2026-08-16); tabs are links, selection lives in the URL
+    ui/menu.tsx                                           hand-rolled dropdown (click-outside, Escape, aria) — no Radix, bundle budget
     trade/trading-panel.tsx                               sticky order ticket, market + limit (Step 3.6, built 2026-08-09), Milestone 3 — not yet confirmed against a real mainnet fill
     trade/order-book.tsx                                  live bid/ask depth (Step 3.2, built 2026-08-09), also anchors the trading-panel slippage guard when live; also feeds the limit-price prefill on toggle
     trade/open-orders-panel.tsx                           resting limit orders for the selected outcome + per-order cancel (Step 3.6, built 2026-08-09); no bulk cancel-all yet
@@ -259,6 +267,13 @@ The consequence is the dangerous part: **you cannot verify this variable inlined
 
 **A wrong Privy app id fails the build, not the request.** With a non-empty but invalid id, prerender dies with `Error: Cannot initialize the Privy provider with an invalid Privy app ID` on `/_not-found`. Fail-fast, but it means a typo presents as a build error far from its cause.
 
+**🚩 `hasAcceptedTerms` CANNOT be read server-side — the identity-token parser hardcodes it to `false`.** Diagnosed 2026-08-16 after the legal gate rejected every order from every user with **451 `terms_not_accepted`** — "Please accept the Terms of Service and Risk Disclosure before trading" — for users who had just accepted. Two independent causes, both now fixed:
+
+1. **The boolean does not exist in the token.** `parseUserFromIdentityTokenPayload` (`@privy-io/node/lib/identity-token.js`) builds its `User` with a literal `has_accepted_terms: false`; the claim isn't in the JWT and the SDK substitutes a constant. Any server check on it fails 100% of the time, permanently, and no amount of re-accepting or token refreshing helps. **`custom_metadata` *is* a real claim** and parses correctly — so the versioned record we write ourselves is the only usable server-side evidence. `userNeedsAcceptance` now gates on the version alone, and `AuthenticatedUser` deliberately has no `hasAcceptedTerms` field so nothing can regress into using it. This is not weaker: custom metadata needs the app secret to write, so it is server-controlled, whereas the boolean is client-set.
+2. **The version claim is stale until the token rotates.** `AcceptanceGate` writes both halves, then must `await refreshUser()` (`useUser()` from `@privy-io/react-auth` — "updates the user object **and identity token** in the client"), or the freshly-written metadata isn't in the cookie the server reads.
+
+⚠️ **A user who accepted before fix (2) needs one sign-out/sign-in.** Their Privy record is correct but their cookie predates it, and the client-side gate won't re-prompt (it reads the real user object, which looks accepted), so there is no in-app way to remint it. `/api/auth/me` → `legal.acceptedVersion` shows what the server actually sees; `null` there with the gate passing is exactly this state.
+
 **Privy issues two tokens, and identity tokens are OFF by default.** `privy-token` (access, authenticates, 1h) and `privy-id-token` (identity, carries linked accounts, 10h). The embedded wallet address/id come from the **identity** token — verifying only the access token gets you a user with no wallet, so `verifySession` returns null and every authenticated route 401s.
 
 Enable at **User management → Authentication → Advanced → "Return user data in an identity token"** (verified against docs.privy.io 2026-08-04). Until it is on, the symptom is a *client* session that looks fine — email and signer address render — while every server route reports `unauthorized`. `/api/auth/me` distinguishes this case explicitly as `missing_identity_token` rather than a bare 401.
@@ -326,6 +341,23 @@ The "Ending soon" case is total — sorting by soonest end surfaces the *oldest 
 - **Sort and range filters do nothing.** `order`, `ascending` and `volume_min` are all ignored — identical first result with and without them. This is why the discovery UI *hides* the sort/filter chips during a search rather than disabling them: leaving them on screen would imply they still apply.
 
 Events come back in the same shape as the listing endpoints, nested markets included, so they render through `MarketCard` unchanged. Lives behind `/api/markets/search` — a separate route from `/api/markets` precisely because the two contracts differ this much; folding them together would mean one route returning two shapes.
+
+**🚩 `prices-history` returns an EMPTY array with a 200 when `fidelity` doesn't suit `interval`.** `GET clob.polymarket.com/prices-history?market=<tokenId>&interval=<i>&fidelity=<minutes>` → `{"history":[{"t":<unix s>,"p":<0-1>}]}`. `market` is a **CLOB token id** (one side of one market), so a two-outcome market is two separate series. Measured 2026-08-16 on one token:
+
+| interval | fid 1 | fid 5 | fid 60 |
+|---|---|---|---|
+| `1h` | 61 | 13 | 2 |
+| `6h` | 361 | 72 | 7 |
+| `1d` | 1441 | 289 | 25 |
+| `1w` | **0** | 2017 | 169 |
+| `1m` | **0** | **0** | 743 |
+| `max` | 4452 | 4452 | 743 |
+
+One fidelity across every range tab silently blanks some of them — 60 everywhere gives a 2-point "1H", 1 everywhere gives an empty "1W" and "1M", with no error either way. The verified pairings are `PRICE_RANGES` in `price-history-types.ts` and travel as a single opaque **range id**, same discipline as `EVENT_SORTS` pairing `order` with `ascending`. Re-probe live before changing one.
+
+**Gamma has comments but NO news.** `GET /comments?parent_entity_type=Event&parent_entity_id=<numeric id>&limit=N` → bare array of `{body, createdAt, profile:{name, pseudonym, profileImage}}` (verified 2026-08-16; takes the numeric event id, not a slug, and returns no `{events,next_cursor}` envelope). `GET /news` and `/events/{id}/news` both **404**, and there is no `news` field on an event — the reference design's NYT/AP headlines have no first-party source. Avatars are on the same S3 bucket as market icons, so they need no new CSP or `remotePatterns` entry.
+
+**🚩 Event legs settle individually, long before the event closes.** Measured 2026-08-16 on "Israel x Iran ceasefire continues through…?": **17 of 22** markets were `closed: true` / `acceptingOrders: false` at a price of exactly `1`, while the event itself was open with an end date two weeks out. Ranking outcomes without filtering put three settled legs at **100%** at the top of the hero. Note `active` is useless here — it was `true` on every settled leg; **`closed` is the flag that separates them**. `rankEventOutcomes` (gamma-types.ts) drops them, and decides binary-vs-multi on the *original* market count so a lone survivor isn't relabelled as a Yes/No pair.
 
 **Withdrawals were never in the client SRS.** Added as FR-4.6. Deposit-only is not shippable. **Built 2026-08-09** — see the next two entries for what the research turned up.
 

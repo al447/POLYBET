@@ -67,23 +67,32 @@ export function needsAcceptance(state: AcceptanceState, currentVersion: string):
 }
 
 /**
- * Same decision, taken straight from a verified session.
+ * Same decision, taken from a verified session — **on the version alone.**
  *
- * `AuthenticatedUser` already carries both gating fields — `verifySession`
- * parsed them out of the identity token — so server callers should use this
- * rather than reconstructing an `AcceptanceState` around a metadata bag they
- * do not have. Passing `undefined` metadata to `readAcceptance` on a route
- * would silently drop the version half of the check and let a stale acceptance
- * through.
+ * 🚩 **Privy's `hasAcceptedTerms` does not survive into an identity token, so
+ * the server cannot read it.** `parseUserFromIdentityTokenPayload` in
+ * `@privy-io/node` builds its `User` with a literal `has_accepted_terms:
+ * false` — the claim simply isn't in the JWT, and the SDK fills the field with
+ * a constant. Checking it server-side therefore fails **every** user forever,
+ * however many times they accept: the gate closes, and the next order comes
+ * back 451 `terms_not_accepted`. That is a real bug this project shipped, not
+ * a hypothetical.
+ *
+ * Gating on the version instead is not a weakening. The version is written
+ * only by `/api/legal/accept`, behind `requireUser()`, into Privy custom
+ * metadata — a bag the browser has no API to write, since `setCustomMetadata`
+ * requires the app secret. So it is server-controlled evidence, where the
+ * boolean is a flag the client sets on itself. It also says *which* revision
+ * was accepted, which the boolean never could.
+ *
+ * The client-side gate still checks both (`needsAcceptance`), because there
+ * the flag comes from Privy's real user object and is genuine.
  */
 export function userNeedsAcceptance(
-  user: { hasAcceptedTerms: boolean; legalVersion: string | null },
+  user: { legalVersion: string | null },
   currentVersion: string,
 ): boolean {
-  return needsAcceptance(
-    { hasAcceptedTerms: user.hasAcceptedTerms, version: user.legalVersion, acceptedAt: null },
-    currentVersion,
-  );
+  return user.legalVersion !== currentVersion;
 }
 
 function readString(value: string | number | boolean | undefined): string | null {

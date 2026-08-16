@@ -3,7 +3,7 @@
 import { useCallback, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { usePrivy, useAcceptTerms } from "@privy-io/react-auth";
+import { usePrivy, useAcceptTerms, useUser } from "@privy-io/react-auth";
 
 import { isAuthConfigured } from "@/lib/auth/public-config";
 import { ACCEPTANCE_VERSION, LEGAL_DOCUMENTS } from "@/lib/legal/documents";
@@ -47,6 +47,7 @@ export function AcceptanceGate({ children }: { children: ReactNode }) {
 function PrivyAcceptanceGate({ children }: { children: ReactNode }) {
   const { ready, authenticated, user } = usePrivy();
   const { acceptTerms } = useAcceptTerms();
+  const { refreshUser } = useUser();
   const pathname = usePathname();
 
   const [submitting, setSubmitting] = useState(false);
@@ -71,18 +72,40 @@ function PrivyAcceptanceGate({ children }: { children: ReactNode }) {
         throw new Error(body?.message ?? "Couldn't record your acceptance.");
       }
 
-      // Local pass-through: `user.hasAcceptedTerms` comes from Privy's cached
-      // user and the server's copy rides on an identity token minted at login,
-      // so neither necessarily reflects this write yet. Gating on the round
-      // trip we just watched succeed avoids making the user wait for a refresh
-      // that may not come until the token rotates.
+      /**
+       * 🚩 **Both writes have landed on Privy, and the server still can't see
+       * them.** The accepted revision reaches the server as a `custom_metadata`
+       * claim on the **identity token** (`privy-id-token`), which was minted at
+       * login — so it carries the pre-acceptance bag until it rotates.
+       *
+       * Symptom without this: the gate closes, the user reaches the trading UI,
+       * and the first order comes back 451 `terms_not_accepted` — "Please
+       * accept the Terms of Service and Risk Disclosure before trading" — for
+       * someone who just did exactly that. `refreshUser()` is documented as
+       * updating "the user object and identity token in the client", which is
+       * the missing step.
+       *
+       * (The *other* half of that bug lived server-side: the gate also checked
+       * Privy's `hasAcceptedTerms`, which no identity token can carry. See
+       * `userNeedsAcceptance`.)
+       *
+       * Left inside the `try` on purpose: if it fails, acceptance really isn't
+       * usable yet, so keeping the gate open with an error beats waving the
+       * user through into a trading surface that will reject them. Retrying is
+       * safe — every step here is idempotent.
+       */
+      await refreshUser();
+
+      // Belt and braces alongside the refresh: `needsAcceptance` below should
+      // now return false on its own, but this doesn't depend on the refreshed
+      // user having propagated into `usePrivy()`'s cache this render.
       setAccepted(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't record your acceptance.");
     } finally {
       setSubmitting(false);
     }
-  }, [acceptTerms]);
+  }, [acceptTerms, refreshUser]);
 
   const isLegalPage =
     pathname === LEGAL_DOCUMENTS.terms.path || pathname === LEGAL_DOCUMENTS.risk.path;

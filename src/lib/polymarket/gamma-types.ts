@@ -498,7 +498,13 @@ function binaryOutcomes(market: GammaMarket): RankedOutcome[] {
       {
         label: market.groupItemTitle ?? market.question,
         pct: price !== null ? Math.round(price * 100) : null,
-        tokenId: tokens[0]?.tokenId ?? null,
+        // Read straight off `clobTokenIds` rather than through `outcomeTokens`:
+        // that helper returns nothing when it can't pair labels to tokens, so
+        // a market with a corrupt `outcomes` string would lose a token id it
+        // demonstrably has — and with it, its chart line. Index 0 is the "yes"
+        // side by Gamma's own ordering, the same assumption `snapshotPrice`
+        // already makes about `outcomePrices[0]`.
+        tokenId: parseGammaJsonArray<string>(market.clobTokenIds)[0] ?? null,
       },
     ];
   }
