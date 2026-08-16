@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { Position } from "@polymarket/bindings/data";
 
 import { useBrowserClient } from "@/hooks/use-browser-client";
@@ -27,39 +27,38 @@ import { PositionList } from "@/components/portfolio/position-list";
 export function MarketPositionsTab({ eventSlug }: { eventSlug: string }) {
   const { client, status, error, connect } = useBrowserClient();
   const [positions, setPositions] = useState<Position[] | null>(null);
-  const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-
-  const load = useCallback(
-    async (signal: { cancelled: boolean }) => {
-      if (!client) return;
-      setLoading(true);
-      setLoadError(null);
-      try {
-        const all = await listPortfolioPositions(client);
-        // Filter to this event rather than fetching per-market: one page of
-        // positions covers the whole account, and the API has no per-event
-        // query. `eventSlug` is on every position.
-        if (!signal.cancelled) setPositions(all.filter((p) => p.eventSlug === eventSlug));
-      } catch (err) {
-        if (!signal.cancelled) {
-          setLoadError(err instanceof Error ? err.message : "Couldn't load your positions.");
-        }
-      } finally {
-        if (!signal.cancelled) setLoading(false);
-      }
-    },
-    [client, eventSlug],
-  );
 
   useEffect(() => {
     if (status !== "ready" || !client) return;
-    const signal = { cancelled: false };
-    void load(signal);
+    let cancelled = false;
+
+    // Every `setState` here is inside a promise callback, never in the effect
+    // body. Calling one synchronously — which an `async` helper invoked from
+    // here does, before its first `await` — schedules a second render on the
+    // same commit, which is what `react-hooks/set-state-in-effect` catches.
+    listPortfolioPositions(client)
+      .then((all) => {
+        // Filtered here rather than fetched per-market: one page covers the
+        // whole account and the API has no per-event query, but `eventSlug` is
+        // on every position.
+        if (!cancelled) setPositions(all.filter((position) => position.eventSlug === eventSlug));
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setLoadError(err instanceof Error ? err.message : "Couldn't load your positions.");
+        }
+      });
+
     return () => {
-      signal.cancelled = true;
+      cancelled = true;
     };
-  }, [status, client, load]);
+  }, [status, client, eventSlug]);
+
+  // Derived, not stored. A `loading` state would need setting before the fetch
+  // starts — i.e. synchronously in the effect above — and it carries no
+  // information these three don't already have.
+  const loading = status === "ready" && positions === null && loadError === null;
 
   if (status === "signed-out") {
     return (
@@ -92,7 +91,7 @@ export function MarketPositionsTab({ eventSlug }: { eventSlug: string }) {
     );
   }
 
-  if (loading && positions === null) {
+  if (loading) {
     return <Notice>Loading your positions…</Notice>;
   }
 

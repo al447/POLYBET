@@ -63,7 +63,9 @@ export default async function MarketDetailPage({
         ← Back to markets
       </Link>
 
-      <header className="mt-4 mb-8 flex items-start gap-5">
+      {/* `mb-6` matches the gap between the chart and the outcome list below,
+          so the header sits in the same rhythm now that it's flush to the chart. */}
+      <header className="mt-4 mb-6 flex items-start gap-5">
         {event.icon ? (
           <Image
             src={event.icon}
@@ -93,9 +95,14 @@ export default async function MarketDetailPage({
         </div>
       </header>
 
-      {event.description ? (
-        <p className="mb-8 max-w-2xl text-base whitespace-pre-line text-zinc-400">{event.description}</p>
-      ) : null}
+      {/*
+        No description block here any more. It's the same prose the Rules tab
+        renders further down (`MarketRules` reads `market.description ??
+        event.description`), and at full length — the Fed market's runs to
+        seven paragraphs — it pushed the chart and the order ticket below the
+        fold. Nothing is lost by dropping it: Rules is where a reader looks for
+        resolution criteria, and it has the "Show more" affordance this didn't.
+      */}
 
       {/*
         The chart is passed *into* the trading section rather than rendered
