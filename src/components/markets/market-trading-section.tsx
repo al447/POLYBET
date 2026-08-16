@@ -53,8 +53,17 @@ export function MarketTradingSection({
       {/*
         `top-28` clears the masthead, which is two rows now (h-16 + the ~44px
         category strip). At the old `top-20` the ticket slid under the nav.
+
+        The scrollbar is hidden, not the scrolling. `max-h` + `overflow-y-auto`
+        is what keeps the bottom of a tall ticket (order book, open orders)
+        reachable once it outgrows the viewport — dropping those would strand
+        that content off-screen with no way to get to it. What's removed is
+        only the chrome, which macOS draws as a bright overlay bar against this
+        dark panel. Wheel, trackpad and keyboard scrolling are unaffected, and
+        scroll still chains to the page at the ends. Same technique as the nav
+        bar's category strip.
       */}
-      <div className="mt-6 lg:sticky lg:top-28 lg:mt-0 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto">
+      <div className="mt-6 lg:sticky lg:top-28 lg:mt-0 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {selected ? (
           <TradingPanel market={selected.market} outcomeIndex={selected.outcomeIndex} eventTitle={event.title} />
         ) : (
