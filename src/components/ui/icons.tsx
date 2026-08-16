@@ -213,6 +213,22 @@ export function FilterIcon(props: IconProps) {
   );
 }
 
+export function PauseIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M9 5v14M15 5v14" />
+    </svg>
+  );
+}
+
+export function PlayIcon(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M8 5.2 19 12 8 18.8Z" />
+    </svg>
+  );
+}
+
 export function BookmarkIcon(props: IconProps) {
   return (
     <svg {...base} {...props}>

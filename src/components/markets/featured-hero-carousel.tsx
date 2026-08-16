@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 
-import { ChevronLeftIcon, ChevronRightIcon } from "@/components/ui/icons";
+import { ChevronLeftIcon, ChevronRightIcon, PauseIcon, PlayIcon } from "@/components/ui/icons";
 
 /**
  * The featured-market carousel.
@@ -15,11 +15,26 @@ import { ChevronLeftIcon, ChevronRightIcon } from "@/components/ui/icons";
  * (they arrive as one already-rendered SVG path) and keeps this component to
  * pure presentation.
  *
- * **No autoplay.** The reference design rotates on a timer; this doesn't. A
- * panel that moves on its own sits directly above a grid of links to
- * order-signing pages, so a mistimed slide turns a deliberate click into the
- * wrong market. It also fights screen readers and anyone reading slowly.
+ * **Autoplay, with brakes.** It rotates on a timer like the reference design.
+ * The risk that made this worth thinking about is that the panel sits directly
+ * above links into order-signing pages, so a slide that changes under a
+ * reaching cursor turns a deliberate click into the wrong market. Four things
+ * stop that:
+ *
+ * - hovering or focusing anywhere in the hero pauses it;
+ * - any manual navigation (dot, arrow, key) stops it for good — the user has
+ *   taken over, and a carousel that keeps yanking after that is hostile;
+ * - a background tab doesn't advance, so you come back to the slide you left;
+ * - `prefers-reduced-motion` disables it outright, and the pause button is
+ *   always there (the WAI-ARIA carousel pattern requires a way to stop
+ *   rotation).
+ *
+ * `aria-live` is `off` while rotating and `polite` once under manual control —
+ * announcing every automatic slide would flood a screen reader.
  */
+
+/** Slow enough to read an outcome list and a chart before it moves on. */
+const AUTOPLAY_MS = 7000;
 
 export type HeroChartSeries = {
   /** Pre-rendered SVG path in the viewBox below. */
@@ -60,12 +75,50 @@ export type HeroSlide = {
 
 export function FeaturedHeroCarousel({ slides }: { slides: HeroSlide[] }) {
   const [index, setIndex] = useState(0);
+  /** The user's own play/pause choice. Manual navigation turns it off. */
+  const [playing, setPlaying] = useState(true);
+  /** Transient: pointer or keyboard focus is inside the hero right now. */
+  const [hovered, setHovered] = useState(false);
+  const [tabVisible, setTabVisible] = useState(true);
+  const [reducedMotion, setReducedMotion] = useState(false);
 
   const count = slides.length;
+
+  /** Steps the carousel and hands control to the user — see `playing`. */
   const go = useCallback(
-    (delta: number) => setIndex((current) => (current + delta + count) % count),
+    (delta: number) => {
+      setIndex((current) => (current + delta + count) % count);
+      setPlaying(false);
+    },
     [count],
   );
+
+  // Read after mount, not during render: `window.matchMedia` doesn't exist on
+  // the server, and initialising state from it would break hydration.
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReducedMotion(query.matches);
+
+    const handleChange = (event: MediaQueryListEvent) => setReducedMotion(event.matches);
+    query.addEventListener("change", handleChange);
+    return () => query.removeEventListener("change", handleChange);
+  }, []);
+
+  useEffect(() => {
+    const handleVisibility = () => setTabVisible(!document.hidden);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => document.removeEventListener("visibilitychange", handleVisibility);
+  }, []);
+
+  const rotating = playing && !hovered && tabVisible && !reducedMotion && count > 1;
+
+  useEffect(() => {
+    if (!rotating) return;
+    // Advances without touching `playing` — `go` would stop the timer it's
+    // being driven by, so the automatic path deliberately doesn't reuse it.
+    const timer = setInterval(() => setIndex((current) => (current + 1) % count), AUTOPLAY_MS);
+    return () => clearInterval(timer);
+  }, [rotating, count]);
 
   useEffect(() => {
     if (count < 2) return;
@@ -89,11 +142,21 @@ export function FeaturedHeroCarousel({ slides }: { slides: HeroSlide[] }) {
   const next = slides[(index + 1) % count];
 
   return (
-    <section aria-roledescription="carousel" aria-label="Featured markets">
+    <section
+      aria-roledescription="carousel"
+      aria-label="Featured markets"
+      // Pause while the user is reading or reaching for something. `*Capture`
+      // so focus anywhere inside — a dot, the title link — counts, which is
+      // the keyboard equivalent of hovering.
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setHovered(true)}
+      onBlurCapture={() => setHovered(false)}
+    >
       <div
-        // `aria-live` announces the new slide when the user steps through it,
-        // which is safe precisely because nothing advances on a timer.
-        aria-live="polite"
+        // Silent while rotating on its own; announces once the user is
+        // stepping through it deliberately.
+        aria-live={rotating ? "off" : "polite"}
         className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5"
       >
         <Slide slide={slide} />
@@ -101,12 +164,24 @@ export function FeaturedHeroCarousel({ slides }: { slides: HeroSlide[] }) {
 
       {count > 1 ? (
         <div className="mt-3 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setPlaying((current) => !current)}
+              aria-label={playing ? "Pause featured markets" : "Play featured markets"}
+              className="rounded-md p-1 text-zinc-500 transition hover:text-zinc-200"
+            >
+              {playing ? <PauseIcon className="size-3.5" /> : <PlayIcon className="size-3.5" />}
+            </button>
+
             {slides.map((item, dot) => (
               <button
                 key={item.id}
                 type="button"
-                onClick={() => setIndex(dot)}
+                onClick={() => {
+                  setIndex(dot);
+                  setPlaying(false);
+                }}
                 aria-label={`Show ${item.title}`}
                 aria-current={dot === index}
                 className={`h-1.5 rounded-full transition ${
