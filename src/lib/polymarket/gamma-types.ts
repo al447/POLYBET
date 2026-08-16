@@ -97,6 +97,17 @@ export type GammaMarket = {
    * governor election?". Absent on standalone binary markets.
    */
   groupItemTitle?: string;
+  /** Resolution criteria prose — what the "Rules" tab shows, verbatim. */
+  description?: string;
+  /** Where resolution is verified from, e.g. `https://www.dotabuff.com`. */
+  resolutionSource?: string;
+  /**
+   * JSON-encoded string array like `'["proposed"]'` — same Gamma encoding
+   * quirk as `outcomes`, so read it with `parseGammaJsonArray`. Non-empty
+   * means UMA has been asked to resolve and the price is no longer a live
+   * probability.
+   */
+  umaResolutionStatuses?: string;
 };
 
 /**
@@ -135,6 +146,12 @@ export type GammaEvent = {
   liquidity?: number;
   volume?: number;
   category?: string;
+  /**
+   * Event-level resolution source. Verified 2026-08-16 to differ from the
+   * market's own (an event pointed at a Twitch stream while its market pointed
+   * at Dotabuff), so the market's is preferred where both exist.
+   */
+  resolutionSource?: string;
   tags?: GammaTag[];
   markets: GammaMarket[];
 };
