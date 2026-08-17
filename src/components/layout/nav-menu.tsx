@@ -20,14 +20,19 @@ import { LEGAL_DOCUMENTS } from "@/lib/legal/documents";
 /**
  * The masthead's hamburger menu.
  *
- * Most of these rows have no feature behind them. They render muted and
+ * Several of these rows have no feature behind them. They render muted and
  * non-interactive with a "Coming soon" tooltip rather than being hidden —
  * the same convention the nav bar used for its old inline `Ranks`/`Rewards`
  * placeholders, and that `AuthNotConfigured` / `WalletUnavailable` use
- * elsewhere. Copy Trading and Predict AI are deliberately among them: both are
- * Phase 2, unfunded, and Copy Trading is additionally blocked on the custody
- * question (OI-5). Showing them advertises the roadmap without pretending the
+ * elsewhere. Showing them advertises the roadmap without pretending the
  * feature exists.
+ *
+ * Leaderboard and Copy Trading became real links on 2026-08-17. Note what that
+ * does and doesn't mean: `/leaderboard` is a complete feature, but
+ * `/copy-trade` is a landing page over live leaderboard data with no copy
+ * engine behind it — the buttons there are honest about that (see `CopyCta`).
+ * The row is a link because the page exists, not because the feature ships.
+ * Predict AI stays inert: unfunded and unspecified, with no page at all.
  *
  * No "Dark mode" row, unlike the reference design: this app is dark-only by
  * decision (see the comment in `globals.css`), so a toggle would either lie or
@@ -45,8 +50,12 @@ export function NavMenu({ authRow }: { authRow?: ReactNode }) {
       triggerClassName="inline-flex cursor-pointer rounded-lg p-2 text-zinc-400 transition hover:bg-zinc-900 hover:text-zinc-100"
       trigger={() => <MenuIcon className="size-5" />}
     >
-      <MenuItemInert icon={<TrophyIcon className="size-4" />}>Leaderboard</MenuItemInert>
-      <MenuItemInert icon={<UsersIcon className="size-4" />}>Copy Trading</MenuItemInert>
+      <MenuItem href="/leaderboard" icon={<TrophyIcon className="size-4" />}>
+        Leaderboard
+      </MenuItem>
+      <MenuItem href="/copy-trade" icon={<UsersIcon className="size-4" />}>
+        Copy Trading
+      </MenuItem>
       <MenuItemInert icon={<SparkleIcon className="size-4" />}>Predict AI</MenuItemInert>
       <MenuItemInert icon={<BookmarkIcon className="size-4" />}>Watchlist</MenuItemInert>
       <MenuItemInert icon={<GiftIcon className="size-4" />}>Rewards</MenuItemInert>

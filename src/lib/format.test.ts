@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { formatEndDate, formatRelativeTime, formatUsd } from "./format";
+import {
+  formatEndDate,
+  formatRelativeTime,
+  formatUsd,
+  formatUsdExact,
+  shortenAddress,
+} from "./format";
 
 describe("formatUsd", () => {
   it("abbreviates millions and thousands", () => {
@@ -18,6 +24,39 @@ describe("formatUsd", () => {
     expect(formatUsd(undefined)).toBe("$0");
     expect(formatUsd("not a number")).toBe("$0");
     expect(formatUsd(0)).toBe("$0");
+  });
+});
+
+describe("formatUsdExact", () => {
+  it("keeps the cents and groups thousands", () => {
+    // The exact figure the leaderboard shows for its top trader — a P&L
+    // headline rounded to "$287.4K" reads as an estimate.
+    expect(formatUsdExact(287_429.0329031234)).toBe("$287,429.03");
+    expect(formatUsdExact(102_266.87)).toBe("$102,266.87");
+    expect(formatUsdExact(0)).toBe("$0.00");
+  });
+
+  it("puts the minus sign before the dollar", () => {
+    expect(formatUsdExact(-178_933.31)).toBe("-$178,933.31");
+  });
+
+  it("falls back to $0.00 on missing or unparseable input", () => {
+    expect(formatUsdExact(undefined)).toBe("$0.00");
+    expect(formatUsdExact("not a number")).toBe("$0.00");
+  });
+
+  it("accepts string numbers, like the compact formatter", () => {
+    expect(formatUsdExact("1204.5")).toBe("$1,204.50");
+  });
+});
+
+describe("shortenAddress", () => {
+  it("elides the middle of a full address", () => {
+    expect(shortenAddress("0x3dfb153c197d4c19d3b31c1ecd2c7b6860eeabaf")).toBe("0x3dfb…abaf");
+  });
+
+  it("leaves anything already short enough alone", () => {
+    expect(shortenAddress("0x1234")).toBe("0x1234");
   });
 });
 

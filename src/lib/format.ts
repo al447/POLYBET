@@ -19,6 +19,47 @@ export function formatUsd(value: number | string | undefined): string {
 }
 
 /**
+ * Exact USD to the cent, e.g. `$287,429.03`, `-$1,204.50`.
+ *
+ * The counterpart to `formatUsd`, not a replacement: a volume stat reads
+ * better compact (`$2.3M`), but a P&L headline is a specific amount someone
+ * actually made, and rounding it to `$287.4K` reads as an estimate. Use the
+ * compact one for context figures and this one for money that is the point of
+ * the row.
+ *
+ * The sign goes before the dollar, not inside it — `-$1,204.50` rather than
+ * `$-1,204.50`.
+ */
+export function formatUsdExact(value: number | string | undefined): string {
+  const num = typeof value === "string" ? Number(value) : value;
+  // `Number.isFinite` already rejects undefined and NaN — but unlike
+  // `formatUsd`'s `!num` guard it lets 0 through, which must render "$0.00"
+  // rather than being treated as missing.
+  if (!Number.isFinite(num)) return "$0.00";
+
+  const magnitude = Math.abs(num as number).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${(num as number) < 0 ? "-" : ""}$${magnitude}`;
+}
+
+/**
+ * `0x1234…cdef` — the full value belongs in a `title` attribute, never
+ * truncated silently.
+ *
+ * Lives here rather than in `ui/primitives.tsx` (which re-exports it for its
+ * existing callers) because `lib/` must not import from `components/`: the
+ * leaderboard parser needs this while running server-side, and dragging a
+ * component module into a data path to get one pure string function is the
+ * wrong direction of dependency.
+ */
+export function shortenAddress(address: string): string {
+  if (address.length <= 12) return address;
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+/**
  * Card-style end date: `Nov 3, 2026`, `Ended`, or `No end date`.
  *
  * Gamma leaves plenty of events undated or expired-but-open (see

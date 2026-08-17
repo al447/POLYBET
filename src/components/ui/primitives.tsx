@@ -72,8 +72,12 @@ export function StatusDot({ tone }: { tone: "ok" | "warn" | "bad" | "idle" }) {
   );
 }
 
-/** `0x1234…cdef` — full value belongs in a `title` attribute, never truncated silently. */
-export function shortenAddress(address: string): string {
-  if (address.length <= 12) return address;
-  return `${address.slice(0, 6)}…${address.slice(-4)}`;
-}
+/**
+ * `0x1234…cdef` — full value belongs in a `title` attribute, never truncated
+ * silently.
+ *
+ * Moved to `lib/format.ts` and re-exported here so existing callers are
+ * unchanged. It had to move because `lib/` code needs it too (the leaderboard
+ * parser), and nothing under `lib/` may import from `components/`.
+ */
+export { shortenAddress } from "@/lib/format";

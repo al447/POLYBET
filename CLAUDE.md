@@ -2,7 +2,7 @@
 
 Working context for the Polymarket Integration Platform. **Keep this file current** — see [Maintenance Protocol](#maintenance-protocol) at the bottom.
 
-> **Last updated:** 2026-08-16 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
+> **Last updated:** 2026-08-17 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
 >
 > **Deploy status — updated 2026-08-09.** First deploy **attempted and rejected 2026-08-05** — the client's Cloudflare account was on **Workers Free** and the upload failed with `exceeded the size limit of 3 MiB [code: 10027]`. **Resolved 2026-08-09: the client upgraded to Workers Paid, and a deploy has now succeeded** on the default `*.workers.dev` subdomain. All six request-time secrets are pushed (`wrangler secret put` — the four `POLYMARKET_BUILDER_*`, `PRIVY_APP_SECRET`, `POLYGON_RPC_URL`), and both build-time vars (`NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_POLYMARKET_BUILDER_CODE`) were exported before this build — so the deployed instance should be running in **live mode** with login and builder attribution both wired, not mock mode. **Not yet done:** the custom domain is not wired (still on `*.workers.dev`, not `POLYBETS.XYZ`), and none of [deployment.md §5](deployment.md#5-post-deploy-verification)'s 9 post-deploy checks (signing spike, health, geoblock, security headers, login end-to-end, etc.) have actually been run or recorded against this deployment — the config being in place is not the same as confirming it works. Run §5 before treating this as verified.
 >
@@ -21,6 +21,8 @@ src/
     restricted/            geoblocked landing
     market/[slug]/         market detail page, keyed by EVENT slug (Step 2.4, built 2026-08-07)
     portfolio/             positions + PnL (Steps 4.1-4.2, built 2026-08-09) — browser-side reads, no server fetch
+    copy-trade/            Copy Trading landing page (built 2026-08-17) — real leaderboard, NO copy engine, see Traps
+    leaderboard/           full trader board (built 2026-08-17) — server-rendered incl. tabs, no client JS
     api/health             secret presence + builder readiness
     api/geoblock           per-request geo tier (never cached)
     api/auth/me            server-verified session (FR-1.1)
@@ -38,7 +40,9 @@ src/
     polymarket/{config,fees,builder,gamma}.ts   clob.ts removed 2026-08-07, was dead code
     polymarket/price-history-types.ts           PricePoint, PRICE_RANGES, toSparklinePath — client-safe, NOT server-only
     polymarket/price-history.ts                 CLOB /prices-history fetch + cache (server-only)
-    format.ts                                   formatUsd / formatEndDate / formatRelativeTime — shared, was duplicated 3x
+    polymarket/leaderboard-types.ts             LEADERBOARD_PERIODS/ORDERINGS + traderDisplayName — client-safe, NOT server-only
+    polymarket/leaderboard.ts                   Data API /v1/leaderboard fetch + cache (server-only, built 2026-08-17)
+    format.ts                                   formatUsd / formatUsdExact / formatEndDate / formatRelativeTime / shortenAddress — shared; `ui/primitives` re-exports shortenAddress, lib must not import components
     polymarket/browser-client.ts                client-side signing, balance/approvals (market orders; limit orders pending)
     polymarket/market-data.ts                   unauthenticated public client + order-book WS reducer (Step 3.1, built 2026-08-09)
     polymarket/user-events.ts                   authenticated user-channel subscribe + pure fill/order reducer (Step 3.7, built 2026-08-09)
@@ -56,6 +60,8 @@ src/
     markets/{featured-hero,featured-hero-carousel}        home hero: featured events, price lines, comments (built 2026-08-16); autoplay pauses on hover/focus
     layout/{nav-menu,nav-categories}                      two-row masthead: hamburger menu + feed/category tabs (built 2026-08-16); tabs are links, selection lives in the URL
     ui/menu.tsx                                           hand-rolled dropdown (click-outside, Escape, aria) — no Radix, bundle budget
+    ui/avatar.tsx                                         TraderAvatar — coloured letter fallback (built 2026-08-17); the fallback is the 94% case, see leaderboard traps
+    copy-trade/{copy-cta,trader-card}.tsx                 copy-trade page pieces (built 2026-08-17); CopyCta is the ONLY thing deciding what a "Copy trader" click does
     trade/trading-panel.tsx                               sticky order ticket, market + limit (Step 3.6, built 2026-08-09), Milestone 3 — not yet confirmed against a real mainnet fill
     trade/order-book.tsx                                  live bid/ask depth (Step 3.2, built 2026-08-09), also anchors the trading-panel slippage guard when live; also feeds the limit-price prefill on toggle
     trade/open-orders-panel.tsx                           resting limit orders for the selected outcome + per-order cancel (Step 3.6, built 2026-08-09); no bulk cancel-all yet
@@ -355,6 +361,12 @@ Events come back in the same shape as the listing endpoints, nested markets incl
 
 One fidelity across every range tab silently blanks some of them — 60 everywhere gives a 2-point "1H", 1 everywhere gives an empty "1W" and "1M", with no error either way. The verified pairings are `PRICE_RANGES` in `price-history-types.ts` and travel as a single opaque **range id**, same discipline as `EVENT_SORTS` pairing `order` with `ascending`. Re-probe live before changing one.
 
+**🚩 The trader leaderboard's window parameter is `timePeriod`, and `window` is silently ignored.** `GET data-api.polymarket.com/v1/leaderboard?timePeriod=WEEK&orderBy=PNL&limit=6` → bare array of `{rank, proxyWallet, userName, xUsername, verifiedBadge, vol, pnl, profileImage}`. Verified live 2026-08-17 against `docs.polymarket.com/api-reference/core/get-trader-leaderboard-rankings.md`. Params: `timePeriod` (`DAY`/`WEEK`/`MONTH`/`ALL`, default DAY), `orderBy` (`PNL`/`VOL`), `category` (`OVERALL`/`POLITICS`/`SPORTS`/…), `limit` (**clamps at 50**), `offset` (max 1000), `user`, `userName`.
+
+The trap is the failure mode, not the spelling: passing `window=1w` returns a clean **200 of the DAY board**, so a page headed "this week" quietly shows today's numbers with nothing to notice. Same class of bug as `closed:false` not meaning tradeable — the wrong answer arrives looking exactly like the right one. `LEADERBOARD_PERIODS` in `leaderboard-types.ts` pins the verified enum values and travels as an opaque **period id**, same discipline as `EVENT_SORTS` and `PRICE_RANGES`.
+
+Three parsing quirks, measured across a 50-row sample the same day: **`rank` is a string** (`"1"`); **`profileImage` is empty on 47 of 50 rows**, so a letter-avatar fallback (`ui/avatar.tsx`) is the normal case, not the edge case — the few real ones are on the already-allowed `polymarket-upload` S3 bucket, so no CSP or `remotePatterns` change was needed; and **`userName` is often the account's own address with a creation timestamp glued on** (`0x3DFb…eeabAf-1722957908185`, 55 chars) or empty outright — `traderDisplayName` falls back to `shortenAddress` for both. `vol: 0` on a top-PnL trader is **real data**, not a missing field.
+
 **Gamma has comments but NO news.** `GET /comments?parent_entity_type=Event&parent_entity_id=<numeric id>&limit=N` → bare array of `{body, createdAt, profile:{name, pseudonym, profileImage}}` (verified 2026-08-16; takes the numeric event id, not a slug, and returns no `{events,next_cursor}` envelope). `GET /news` and `/events/{id}/news` both **404**, and there is no `news` field on an event — the reference design's NYT/AP headlines have no first-party source. Avatars are on the same S3 bucket as market icons, so they need no new CSP or `remotePatterns` entry.
 
 **🚩 Event legs settle individually, long before the event closes.** Measured 2026-08-16 on "Israel x Iran ceasefire continues through…?": **17 of 22** markets were `closed: true` / `acceptingOrders: false` at a price of exactly `1`, while the event itself was open with an end date two weeks out. Ranking outcomes without filtering put three settled legs at **100%** at the top of the hero. Note `active` is useless here — it was `true` on every settled leg; **`closed` is the flag that separates them**. `rankEventOutcomes` (gamma-types.ts) drops them, and decides binary-vs-multi on the *original* market count so a lone survivor isn't relabelled as a Yes/No pair.
@@ -471,7 +483,7 @@ The client has separately described wanting full Polymarket.com feature parity: 
 | Entire market categories/segments/events | **Covered at no extra cost.** Discovery UI (Step 2.3, implementation.md) browses the whole Gamma catalogue with category, sort and range filters. ⚠️ Correction 2026-08-15: the category chips come from the curated `TOP_CATEGORIES` constant in `gamma-types.ts`, **not** a live tags fetch — an earlier version of this line claimed otherwise. `listTags` exists but is deliberately unwired; see the comment at the foot of `gamma.ts` (unfiltered `/tags` was garbage, `isCarousel:true` too sparse). |
 | Users' deposits | **Done.** Client-provisioned Deposit Wallet, QR + address + balance-polling flow (`deposit-wallet-panel.tsx`). |
 | Signup/signin | **Done, kept as-is per client direction 2026-08-07.** Privy embedded wallet, email-only login. No standalone `/login` page — auth is embedded in the nav bar / home page. |
-| Copy trade feature | **Not in scope — Phase 2, unfunded, legally blocked.** OI-5: auto-executing on a user's behalf requires server-held delegated signing or session keys, which conflicts with the non-custodial architecture (§6.1, srs.md) and needs a product + legal decision before any code. FR-8 in srs.md. |
+| Copy trade feature | **Landing page built 2026-08-17; the engine is still out of scope.** `/copy-trade` is a real page over the real Polymarket leaderboard, and `/leaderboard` is a complete feature. **No copy engine exists behind either.** OI-5 is unchanged: auto-executing on a user's behalf requires server-held delegated signing or session keys, which conflicts with the non-custodial architecture (§6.1, srs.md) and needs a product + legal decision before any code — and Workers can't host the daemon regardless (OI-3). Every "Copy trader" button routes through `CopyCta`, which opens login when signed out and says the engine isn't live when signed in. **Do not wire an order path into it without resolving OI-5 first.** FR-8 in srs.md. |
 | Sports betting AI | **Not in scope — Phase 2, unfunded, unspecified.** FR-7 in srs.md has no chosen model/provider/data source/cost — "not estimable as written." |
 | Domain `POLYBETS.XYZ` → Cloudflare | **Supplied, unverified.** Client states it's pointed at Cloudflare; DNS zone/nameserver delegation not yet checked from this environment (P-8, deployment.md). |
 | Up to 4 revisions | **Commercial term, recorded** in srs.md §8 — no code impact. |

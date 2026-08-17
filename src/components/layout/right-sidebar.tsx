@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
+import Link from "next/link";
 
 import { AccountPanel } from "@/components/auth/account-panel";
 import { DepositWalletPanel } from "@/components/wallet/deposit-wallet-panel";
 import { Card } from "@/components/ui/primitives";
-import { ClockIcon, StarIcon } from "@/components/ui/icons";
+import { ClockIcon, SparkleIcon, StarIcon, UsersIcon } from "@/components/ui/icons";
 import { TOP_CATEGORIES } from "@/lib/polymarket/gamma-types";
 
 /**
@@ -26,6 +27,22 @@ import { TOP_CATEGORIES } from "@/lib/polymarket/gamma-types";
 export function RightSidebar() {
   return (
     <aside className="flex flex-col gap-4">
+      <PromoCard
+        tone="blue"
+        icon={<UsersIcon className="size-5" />}
+        title="Copy top traders"
+        description="Mirror any leaderboard trader, sized to your own limits."
+        cta="Start copying"
+        href="/copy-trade"
+      />
+      <PromoCard
+        tone="amber"
+        icon={<SparkleIcon className="size-5" />}
+        title="Predict AI"
+        description="Predict Sports using Predict AI."
+        cta="Predict Sports"
+      />
+
       <AccountPanel />
       <DepositWalletPanel />
 
@@ -84,6 +101,87 @@ function TrendingTopicsCard() {
         ))}
       </ul>
     </Card>
+  );
+}
+
+/**
+ * Copy Trading and Predict AI, as the reference design presents them: tinted
+ * promo cards at the top of the rail.
+ *
+ * **With `href`, the card is a real link; without it, the button is visibly
+ * disabled and says why on hover** — the same convention as the hamburger
+ * menu's placeholder rows. Advertising the roadmap is fine; a button that
+ * silently fails is not.
+ *
+ * Copy Trading gained an `href` on 2026-08-17 when `/copy-trade` landed. That
+ * page is a landing page over live leaderboard data — the copy *engine* is
+ * still blocked on the custody question (OI-5), since auto-executing on a
+ * user's behalf needs server-held delegated signing and this platform is
+ * non-custodial by design. Predict AI has no page at all and keeps the
+ * disabled button.
+ *
+ * They sit above `AccountPanel` to match the reference's ordering. Worth
+ * revisiting if it turns out to push the deposit flow too far down for
+ * first-time users — promotion for features that don't exist yet outranking
+ * the one that funds the account is a trade, not a free win.
+ */
+function PromoCard({
+  tone,
+  icon,
+  title,
+  description,
+  cta,
+  href,
+}: {
+  tone: "blue" | "amber";
+  icon: ReactNode;
+  title: string;
+  description: string;
+  cta: string;
+  /** Omit for a feature with no page yet — the button renders disabled. */
+  href?: string;
+}) {
+  const palette =
+    tone === "blue"
+      ? {
+          frame: "border-blue-500/30 bg-blue-500/5",
+          glyph: "text-blue-400",
+          button: "bg-blue-600 text-white",
+        }
+      : {
+          frame: "border-amber-500/30 bg-amber-500/5",
+          glyph: "text-amber-400",
+          button: "bg-amber-500 text-black",
+        };
+
+  return (
+    <section className={`rounded-xl border p-5 ${palette.frame}`}>
+      <div className="flex items-center gap-2.5">
+        <span className={palette.glyph}>{icon}</span>
+        <h2 className="text-base font-semibold tracking-tight text-zinc-100">{title}</h2>
+      </div>
+
+      <div className="mt-2 flex items-end justify-between gap-4">
+        <p className="text-sm text-zinc-400">{description}</p>
+        {href ? (
+          <Link
+            href={href}
+            className={`shrink-0 rounded-lg px-3.5 py-2 text-sm font-semibold transition hover:opacity-90 ${palette.button}`}
+          >
+            {cta}
+          </Link>
+        ) : (
+          <button
+            type="button"
+            disabled
+            title="Coming soon"
+            className={`shrink-0 cursor-not-allowed rounded-lg px-3.5 py-2 text-sm font-semibold opacity-60 ${palette.button}`}
+          >
+            {cta}
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 
