@@ -1,18 +1,26 @@
 import { ImageResponse } from "next/og";
 
 /**
- * The card that renders when a Polybets link is shared.
+ * GENERATOR for `src/app/opengraph-image.png` — **not a route.**
+ *
+ * ⚠️ Do not move this back into `src/app/`. Measured 2026-08-19: living there
+ * as a route costs **~989 KiB gzipped** in the Worker bundle (`resvg.wasm` 517,
+ * `index.node.js` 213, `index.edge.js` 163, `yoga.wasm` 28) — about 10% of the
+ * entire 10 MiB cap. Marking the route static does **not** avoid this: Next
+ * reported it as `○ (Static)` and prerendered the PNG, and OpenNext bundled the
+ * whole `@vercel/og` runtime into the server function anyway. The committed PNG
+ * is byte-identical to what this produced, at zero runtime cost.
  *
  * No custom font is loaded on purpose. Satori — the renderer behind `next/og` —
  * reads TTF, OTF and WOFF, but **not WOFF2**, and the only faces committed to
  * this repo are `Geist-Variable.woff2` / `GeistMono-Variable.woff2`. Passing
- * either would throw at build. `next/og`'s bundled default sans is used
- * instead; matching Geist here would mean committing a second copy of the font
- * in another format purely for this one image.
+ * either throws at build, so this uses `next/og`'s bundled default sans.
  *
- * Kept free of dynamic data so Next can prerender it to a static file at build
- * time rather than pulling the Satori/resvg WASM into the Worker bundle — which
- * is already ~4.79 MiB gzipped against a 10 MiB cap (see CLAUDE.md Traps).
+ * To regenerate after a brand change:
+ *   1. cp scripts/brand/opengraph-image.tsx src/app/
+ *   2. npm run build
+ *   3. cp .next/server/app/opengraph-image.body src/app/opengraph-image.png
+ *   4. rm src/app/opengraph-image.tsx      ← do not skip this step
  */
 
 export const alt = "Polybets — prediction markets";

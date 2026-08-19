@@ -1,14 +1,18 @@
 import { ImageResponse } from "next/og";
 
 /**
- * iOS home-screen icon. 180x180 is the size Apple asks for.
+ * GENERATOR for `src/app/apple-icon.png` — **not a route.**
  *
- * Full-bleed square, no rounded corners: iOS applies its own corner radius and
- * masks whatever it is given, so rounding here would show as a dark ring inside
- * the system's own curve.
+ * ⚠️ Do not move this back into `src/app/`. See the header of
+ * `opengraph-image.tsx` next door: as a route it drags the ~989 KiB `next/og`
+ * runtime into the Worker bundle even though the output is fully static.
  *
- * PNG rather than reusing `icon.svg` because the `apple-icon` convention does
- * not accept SVG. See `opengraph-image.tsx` for why no custom font is loaded.
+ * iOS home-screen icon, 180x180. Full-bleed square with no rounded corners:
+ * iOS applies its own corner radius and masks whatever it is given, so rounding
+ * here would show as a dark ring inside the system's own curve. PNG rather than
+ * reusing `icon.svg` because the `apple-icon` convention does not accept SVG.
+ *
+ * Regenerate the same way, swapping `apple-icon` for `opengraph-image`.
  */
 
 export const size = { width: 180, height: 180 };

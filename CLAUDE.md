@@ -21,8 +21,8 @@ src/
   middleware.ts            geo gate (Edge — NOT proxy.ts, see below)
   app/
     icon.svg               favicon — same geometry as `LogoMark`, literal hex (no `currentColor`), on a filled field
-    opengraph-image.tsx    1200x630 share card via next/og (built 2026-08-19)
-    apple-icon.tsx         180x180 iOS icon via next/og — full-bleed, iOS applies its own corner radius
+    opengraph-image.png    1200x630 share card — STATIC bytes, see the next/og trap; `.alt.txt` beside it
+    apple-icon.png         180x180 iOS icon — STATIC, full-bleed (iOS applies its own corner radius)
     restricted/            geoblocked landing
     market/[slug]/         market detail page, keyed by EVENT slug (Step 2.4, built 2026-08-07)
     portfolio/             positions + PnL (Steps 4.1-4.2, built 2026-08-09) — browser-side reads, no server fetch
@@ -86,6 +86,7 @@ scripts/
   check-client-bundle.mjs  CI leak guard
   provision-builder.mjs    P-1..P-5 provisioning + handover
   smoke-builder.mjs        Milestone 1 acceptance, run when P-1..P-5 land
+  brand/*.tsx              next/og GENERATORS for the committed PNGs — deliberately NOT routes, see the trap
 deployment.md              operational runbook — read before any deploy
 ```
 
@@ -298,11 +299,32 @@ The consequence is the dangerous part: **you cannot verify this variable inlined
 
 Enable at **User management → Authentication → Advanced → "Return user data in an identity token"** (verified against docs.privy.io 2026-08-04). Until it is on, the symptom is a *client* session that looks fine — email and signer address render — while every server route reports `unauthorized`. `/api/auth/me` distinguishes this case explicitly as `missing_identity_token` rather than a bare 401.
 
-**🚩 Bundle is 4.79 MiB gzipped with almost no UI — up from 2.90 MiB.** Re-measured 2026-08-04 via `wrangler deploy --dry-run` (`22432.58 KiB / gzip: 4904.02 KiB`). It **already exceeds the 3 MiB free cap**, so Workers **Paid** is now proven mandatory rather than merely prudent (P-7). More importantly it is **~48% of the 10 MiB paid cap** with Milestone 1 only — no discovery UI, no order book, no charts, no portfolio. It grew 65% during Milestone 1 alone, which makes implementation.md's "Low probability" rating for exceeding the paid cap look optimistic. Treat the remaining headroom as a budget, not slack; re-measure every deploy (`deployment.md` §7.3).
+**🚩 Bundle is 5.20 MiB gzipped — 2.90 → 4.79 → 5.20 MiB.** Re-measured **2026-08-19** via `npx opennextjs-cloudflare build && npx wrangler deploy --dry-run` (`24298.09 KiB / gzip: 5320.33 KiB`) — **52% of the 10 MiB paid cap**, with discovery, charts, trading, portfolio, leaderboard, predict-ai and copy-trade all now in. That is +416 KiB over the whole of Weeks 2–4, which is far healthier than Milestone 1's 65% growth, but the direction is still one-way.
+
+⚠️ **Two measurement traps, both hit on 2026-08-19.** `wrangler deploy --dry-run` does **not** build — run it alone and it silently reports whatever `.open-next/` already holds (a run that day measured a two-week-old bundle predating the entire copy-trade feature and looked completely plausible). And a number is only comparable to the ones above if the OpenNext build ran immediately before it. Always use the two-command form.
+
+The earlier 2026-08-04 figure, for the historical record: `22432.58 KiB / gzip: 4904.02 KiB`. It **already exceeds the 3 MiB free cap**, so Workers **Paid** is now proven mandatory rather than merely prudent (P-7). More importantly it is **~48% of the 10 MiB paid cap** with Milestone 1 only — no discovery UI, no order book, no charts, no portfolio. It grew 65% during Milestone 1 alone, which makes implementation.md's "Low probability" rating for exceeding the paid cap look optimistic. Treat the remaining headroom as a budget, not slack; re-measure every deploy (`deployment.md` §7.3).
 
 **Fonts are self-hosted — never reintroduce `next/font/google`.** It resolves over the network during `next build`, so every build, CI run and deploy depends on `fonts.googleapis.com`. That failed a build here on 2026-08-04 (`Failed to fetch Geist from Google Fonts`) on a transient blip, with nothing wrong in the code. The latin-subset variable woff2 files live in `src/app/fonts/` and are loaded with `next/font/local`; Geist is SIL OFL so redistribution is fine. Builds are now reproducible and offline-capable. Use `weight: "100 900"` — a single value collapses a variable font to one weight.
 
-**…but those woff2 files CANNOT be used by `next/og`.** Satori, the renderer behind `ImageResponse`, reads **TTF, OTF and WOFF — not WOFF2**, and woff2 is the only format committed here. So `opengraph-image.tsx` and `apple-icon.tsx` fall back to `next/og`'s bundled default sans, and the share card is deliberately not set in Geist. Matching the site font would mean committing a *second* copy of Geist in another format purely for two images. Don't "fix" this by pointing `ImageResponse` at `Geist-Variable.woff2` — it throws at build.
+**🚩 A `next/og` route costs ~786 KiB gzipped in the Worker bundle EVEN WHEN Next reports it as static.** Measured 2026-08-19 while adding the brand OG card — bundle went **6106.84 → 5320.33 KiB gzip** when the two routes were replaced by committed PNGs. `opengraph-image.tsx` + `apple-icon.tsx` in `src/app/` built cleanly, and `next build` listed both as `○ (Static) prerendered as static content` — the PNGs really were generated at build time. That is not the whole story: OpenNext bundles the route handler regardless, so the full `@vercel/og` runtime shipped into `server-functions/default/` anyway.
+
+| File | gzip |
+|---|---|
+| `resvg.wasm` | 516.7 KiB |
+| `index.node.js` | 212.7 KiB |
+| `index.edge.js` | 162.9 KiB |
+| `yoga.wasm` | 27.9 KiB |
+| **sum of parts** | ~989 KiB |
+| **actual bundle delta** | **786.51 KiB** |
+
+(The per-file column is each artifact gzipped alone; the delta is what the whole bundle actually shed, and it is the number that matters.) Not dead weight esbuild removes — before the fix `handler.mjs` carried 5 live references to each `.wasm`; after it, `satori` and `resvg` are **0 hits** and no `.wasm` ships at all. That is ~8% of the whole 10 MiB cap for two images that never change.
+
+**Fix: commit the rendered bytes, delete the routes.** `src/app/opengraph-image.png` and `apple-icon.png` are the exact output Satori produced, copied out of `.next/server/app/<name>.body`. The generators are preserved at `scripts/brand/*.tsx` — outside the app directory, so Next never bundles them — with regeneration steps in their headers. ⚠️ **Moving either file back into `src/app/` silently re-adds the ~989 KiB.**
+
+Two smaller things learned in the same pass:
+- **Those woff2 files CANNOT be used by `next/og`.** Satori reads **TTF, OTF and WOFF — not WOFF2**, and woff2 is all that is committed here. The generators use the bundled default sans; pointing `ImageResponse` at `Geist-Variable.woff2` throws at build. So the share card is deliberately not set in Geist.
+- **`wrangler deploy --dry-run` does NOT build.** It measures whatever `.open-next/` already holds, so a stale directory yields a confident, meaningless number — a run on 2026-08-19 reported a two-week-old bundle that predated the entire copy-trade feature. Always `npx opennextjs-cloudflare build` first.
 
 **`public/` no longer exists** (removed 2026-08-19). It held only the five untouched `create-next-app` SVGs — `next.svg`, `vercel.svg`, `file.svg`, `globe.svg`, `window.svg` — none referenced anywhere in `src/`, two of them Vercel's own logo shipping inside a client deliverable. Next builds fine without the directory; recreate it only when there is a real static asset to serve.
 
