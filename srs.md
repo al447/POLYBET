@@ -234,7 +234,9 @@ The source SRS is accurate on Builder tier limits and the 4% holding-rewards APY
 
 ### 4.2 Phase 2 — Advanced
 
-> **These are in no milestone in §8 and are unfunded.** See OI-2.
+> **Neither appears in any milestone in §8, and neither was funded.** See OI-2.
+>
+> **FR-8 (Copy Trading) was nevertheless built and shipped inside this engagement, 2026-08-19** — at no additional charge, and without changing the $550 total. FR-7 (Predict AI) is genuinely unbuilt and remains not estimable as written.
 
 #### FR-7 Predict AI — Predict Sport
 | ID | Requirement | Priority |
@@ -246,17 +248,20 @@ The source SRS is accurate on Builder tier limits and the 4% holding-rewards APY
 
 **Unspecified:** model/provider, data sources, generation cadence, caching, per-insight cost, and who pays inference. Not estimable as written.
 
-#### FR-8 Copy Top Traders
-| ID | Requirement | Priority |
-|---|---|---|
-| FR-8.1 | Monitor target "whale" wallets via Data API / on-chain events | Must |
-| FR-8.2 | Users subscribe to a whale with an allocation cap | Must |
-| FR-8.3 | Mirror trades proportionally with position sizing | Must |
-| FR-8.4 | Risk controls: slippage limits, max position, fee-aware balance checks | Must |
-| FR-8.5 | Kill switch — instant unsubscribe, per-user and global | Must |
-| FR-8.6 | Full audit log of every auto-executed trade | Must |
+#### FR-8 Copy Top Traders — ✅ built 2026-08-19, live fill pending
 
-> 🚨 **FR-8 conflicts with §6.1 non-custodial architecture. See OI-5 — this is the single largest unresolved item in the project.**
+| ID | Requirement | Priority | Status |
+|---|---|---|---|
+| FR-8.1 | Monitor target "whale" wallets via Data API / on-chain events | Must | ✅ Data API `/trades` + `/positions` per followed trader, polled every 20s (`lib/copy-trade/trader-feed.ts`); fills grouped into intents so one order is copied once |
+| FR-8.2 | Users subscribe to a whale with an allocation cap | Must | ✅ Follow from `/leaderboard` or `/copy-trade`; per-trade, daily and total caps set in `FollowDialog`, stored per trader (`CopySettings`) |
+| FR-8.3 | Mirror trades proportionally with position sizing | Must | ✅ Fixed-dollar or percent-of-their-notional sizing; exits mirror the *fraction* they closed, not the share count (`decideCopy` / `decideExit`) |
+| FR-8.4 | Risk controls: slippage limits, max position, fee-aware balance checks | Must | ✅ 5% price band anchored on their fill and snapped to the market's tick; three caps; `requiredUsd` checks notional **+ fees**; market-settled and minimum-size checks re-read at click time |
+| FR-8.5 | Kill switch — instant unsubscribe, per-user and global | Must | ✅ Per-trader pause and unfollow, effective on the next tick. **Global kill switch is the `COPY_EXECUTION_MODE` constant, not a runtime control** — see the note below |
+| FR-8.6 | Full audit log of every auto-executed trade | Must | ✅ Every decision is a ledger row — placed, simulated, skipped (with reason), failed or cancelled — with the source trade, size, fee and order id |
+
+> ✅ **Resolved by design, 2026-08-19 — FR-8 no longer conflicts with §6.1.** The conflict was always with *auto-execution*, not with copying. What was built watches and sizes, then stops: each copy waits for the user to click **Place**, and is signed in their browser by their own Privy key. **No wallet is delegated, no key is held server-side, and the engine has no authority the person at the screen does not.** Hands-off auto-signing was considered and deliberately not built — that remains the open legal question, now scoped to a feature nobody is shipping. See OI-5.
+>
+> ⚠️ **Two limits the client must know.** The poll loop runs in a **browser tab**: copies only happen while `/copy-trade` is open, and browsers throttle background tabs to roughly one tick a minute. And FR-8.5's *global* kill switch is a code constant requiring a redeploy, not a dashboard toggle — deliberate, so a switch that turns on real spending cannot be hit by accident, but it is not an instant runtime stop.
 
 ---
 
@@ -327,7 +332,11 @@ Fixed-price engagement, **$550 total**, 4 weeks. Payment due on delivery of each
 > The existing site appears to be `polybet365` (`/Users/sayem/projects/PREDICT-ME`) — a separate prediction-market codebase with its own contracts, backend, and frontend. **Its maintenance scope is undefined (OI-8).**
 
 ### 8.1 Scope Assessment
-Phase 2 (FR-7, FR-8) appears in **none** of the four milestones. As written, the $550/4-week schedule buys Phase 1 only. Phase 2 — AI insight generation plus a copy-trading daemon with a risk engine and delegated execution — is unscoped, unpriced, and unscheduled, and is the larger engineering effort of the two phases. It needs its own SRS, quote, and timeline.
+Phase 2 (FR-7, FR-8) appears in **none** of the four milestones, and the $550/4-week schedule was priced for Phase 1 only.
+
+**Updated 2026-08-19:** half of Phase 2 was built anyway. **FR-8 (Copy Trading) shipped inside the original engagement at no extra charge**, including the leaderboard, the follow/caps flow, the decision engine, the risk controls and the ledger — see FR-8 in §4.2. The design is what made it affordable: no daemon, no delegated execution, no separate host, so the "larger engineering effort" this section anticipated never materialised for that half.
+
+What remains genuinely unbuilt is **FR-7 (Predict AI)** — model/provider, data sources, cadence and who absorbs inference cost are all still unspecified, so it is not estimable as written and needs its own SRS, quote and timeline.
 
 ---
 
@@ -337,9 +346,9 @@ Phase 2 (FR-7, FR-8) appears in **none** of the four milestones. As written, the
 |---|---|---|---|
 | **OI-1** | Target market vs. close-only geoblocking | US/UK/EU are close-only. If that's the intended market, the product cannot legally take new orders there. Changes the business case, not just the code | Client |
 | **OI-2** | Phase 2 unscoped and unfunded | FR-7 and FR-8 are in no milestone. Build to §8 as written and they don't get built | Client |
-| **OI-3** | Copy-trade daemon host | Cannot run on Cloudflare Workers (A-1). Needs a host, a budget line, and a deploy target | Both |
+| ~~**OI-3**~~ | ~~Copy-trade daemon host~~ | ✅ **Moot 2026-08-19 — there is no daemon.** The engine is a poll loop in the user's own browser tab (`useCopyEngine`), so nothing needs hosting, no Durable Object was required, and no budget line appears. The cost is that copies only run while the tab is open | — |
 | **OI-4** | Wallet provider undecided | Privy / Turnkey / Magic have different SDKs, pricing, and Workers compatibility. Blocks Week 1 | Both |
-| **OI-5** | **Copy trading vs. non-custodial** | Auto-executing on a user's behalf requires either server-held delegated signing authority or a session-key scheme. Either weakens §6.1 and changes the platform's regulatory posture from "interface" toward "discretionary trading service." **Unresolvable in code — needs a product and legal decision** | Client + legal |
+| **OI-5** | **Copy trading vs. non-custodial** — ⚠️ **narrowed 2026-08-19, not closed** | The shipped feature sidesteps this entirely: it watches and sizes, then waits for a click, and every order is signed in the user's browser by their own key. No delegation, no session key, no server-held signing authority — so §6.1 holds and the platform stays an interface. **What is still open is only the thing nobody built:** hands-off auto-signing, where copies execute with no human action. That still needs the product and legal decision, and until it has one the click stays load-bearing — removing it is a different product, not a UI change | Client + legal (only if auto-signing is ever wanted) |
 | **OI-6** | Builder fee rate unset | The revenue model. Capped at 100 bps taker / 50 bps maker, paid by users on top of platform fees | Client |
 | **OI-7** | Project start date unconfirmed | All §8 dates derive from it | Client |
 | **OI-8** | Existing-site maintenance scope | $125/mo covers "the existing site" with no defined SLA, scope, or hour cap | Client |
@@ -356,6 +365,8 @@ Phase 2 (FR-7, FR-8) appears in **none** of the four milestones. As written, the
 
 **Milestone 4** — portfolio shows accurate balances, positions, and PnL against on-chain truth; withdrawals complete end-to-end; geoblocking enforced per FR-6; production deploy live on the client domain.
 
+**FR-8 Copy Trading** (outside the milestones — built 2026-08-19, **still to verify**) — following a trader from the leaderboard queues a copy of their next trade, sized inside the user's caps; clicking **Place** signs it from the user's own wallet and it fills on Polygon mainnet, builder-attributed; the position appears in `/portfolio` and the ledger row shows an order id. Until this passes, the honest status is *development-complete, unverified live*.
+
 ---
 
 ## 11. Change Log
@@ -367,3 +378,4 @@ Phase 2 (FR-7, FR-8) appears in **none** of the four milestones. As written, the
 | 1.2 | 2026-08-02 | Added C-6 (Cloudflare Pages → Workers + OpenNext); A-2 downgraded to a verification step as a result; stack table updated; `viem` fixed as the Web3 library. Build steps split into [implementation.md](implementation.md) |
 | 1.3 | 2026-08-02 | Added C-7 — **target version Next.js 14 → 16** (14 is past OpenNext's Q1 2026 EOL), with the breaking-change impact mapped to affected requirements. Workers Paid plan noted in C-6 |
 | 1.4 | 2026-08-07 | FR-3.5 and SEC-2 corrected from "server-side signing" to the actually-implemented client-side signing architecture (resolved 2026-08-04, previously only recorded in CLAUDE.md). FR-2.2 clarified: category filter reads Gamma's live taxonomy, not a hardcoded list. Added revisions (4 rounds) and domain (`POLYBETS.XYZ`, pending DNS verification) to §8 commercials. |
+| 1.5 | 2026-08-19 | **FR-8 (Copy Trading) marked built**, with per-requirement status for FR-8.1…8.6 and the two limits the client must know (browser-tab engine, code-constant global kill switch). The 🚨 conflict banner replaced — click-gated in-browser signing means FR-8 no longer contradicts §6.1. **OI-5 narrowed** to hands-off auto-signing only, which was deliberately not built; **OI-3 closed as moot** — there is no daemon to host. §8.1 scope assessment corrected: FR-8 shipped inside the original $550, FR-7 remains genuinely unbuilt. Added the FR-8 acceptance criterion (one live mainnet copy, builder-attributed). |

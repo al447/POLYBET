@@ -56,6 +56,12 @@ export type ResolutionInput = {
    * request on it. Neither blocks; only an explicit `false` does.
    */
   marketOpen?: boolean | null;
+  /**
+   * This market's smallest placeable order, **in shares**. Same three states as
+   * `marketOpen`: `undefined` was never looked up, `null` could not be read,
+   * and only a real number blocks. See {@link readMinOrderShares}.
+   */
+  minOrderShares?: number | null;
   nowMs: number;
 };
 
@@ -63,6 +69,38 @@ export type ResolutionInput = {
 export type CopyPrecheck =
   | { blocked: true; patch: Partial<CopyLedgerEntry> }
   | { blocked: false; feeBps: number };
+
+/**
+ * Whether this copy is smaller than the market will accept.
+ *
+ * 🚩 The CLOB's minimum is in **shares**, ours ({@link MIN_COPY_USD}) is in
+ * dollars, and the two only line up at a price of exactly 1.00. A $5 floor
+ * clears a 5-share minimum at every price, but the minimum is per-market and
+ * can be higher — this is where the market's own number gets the final say.
+ *
+ * The buy side is an estimate: a market buy is denominated in USD, so shares
+ * are `amount / price`. It is anchored on `expectedPrice` — the price already
+ * shown on the queued row — so what the user reads and what we check agree. A
+ * missing or nonsense anchor is read as `1.00`, the price that yields the
+ * *fewest* shares, so an unreadable row errs toward being allowed through and
+ * letting the CLOB answer rather than being refused on a guess.
+ *
+ * Returns `false` for an unknown minimum (`null`/`undefined`), same rule as
+ * every other outside fact in this file.
+ */
+function isBelowMarketMinimum(
+  entry: CopyLedgerEntry,
+  minOrderShares: number | null | undefined,
+): boolean {
+  if (typeof minOrderShares !== "number" || !Number.isFinite(minOrderShares)) return false;
+  if (minOrderShares <= 0) return false;
+
+  if (entry.side === "SELL") return (entry.shares as number) < minOrderShares;
+
+  const anchor = entry.expectedPrice;
+  const price = Number.isFinite(anchor) && (anchor as number) > 0 ? (anchor as number) : 1;
+  return (entry.amountUsd as number) / price < minOrderShares;
+}
 
 /**
  * Everything that can stop an approved copy, in the order it is checked.
@@ -81,7 +119,7 @@ export type CopyPrecheck =
  * unfunded order anyway; silently reporting nothing is not.
  */
 export function checkCopyPreconditions(input: ResolutionInput): CopyPrecheck {
-  const { entry, preflight, availableUsd, marketOpen, nowMs } = input;
+  const { entry, preflight, availableUsd, marketOpen, minOrderShares, nowMs } = input;
 
   // First, and before a single request is worth spending: a decision this old
   // is about a price that no longer exists.
@@ -137,6 +175,14 @@ export function checkCopyPreconditions(input: ResolutionInput): CopyPrecheck {
     // The sell-side twin of the check above. `placeMarketSell` takes shares, so
     // a row without them has nothing to send.
     return { blocked: true, patch: { status: "failed", error: "Copy had no usable size" } };
+  }
+
+  // Last, because it is the one check that needs a size already known good —
+  // and it applies to both sides, unlike the balance check above. Deliberately
+  // *after* `insufficient_balance`: an empty wallet is the thing the user can
+  // act on, where a copy this small was never placeable at any balance.
+  if (isBelowMarketMinimum(entry, minOrderShares)) {
+    return { blocked: true, patch: { status: "skipped", skipReason: "below_minimum", feeBps } };
   }
 
   return { blocked: false, feeBps };
@@ -358,6 +404,34 @@ export async function readTickSize(
 }
 
 /**
+ * This market's smallest placeable order in shares, or `null` when it could not
+ * be read.
+ *
+ * `minOrderSize` rides on the order book rather than having an endpoint of its
+ * own, so this is one public `fetchOrderBook` — the SDK's own number, from the
+ * same API that will judge the order. Same reasoning as {@link readTickSize}:
+ * deriving a floor independently would be a second source of truth for a value
+ * that decides whether an order is placeable at all.
+ *
+ * ⚠️ Per-market, not a constant. Usually 5 shares, which {@link MIN_COPY_USD}
+ * already clears at any price — this exists for the markets where it is not.
+ */
+export async function readMinOrderShares(
+  client: BrowserClient | null,
+  tokenId: string,
+): Promise<number | null> {
+  if (!client) return null;
+  try {
+    const { fetchOrderBook } = await import("@polymarket/client/actions");
+    const book = await fetchOrderBook(client, { tokenId });
+    const min = Number(book.minOrderSize);
+    return Number.isFinite(min) && min > 0 ? min : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 🚩 Places one queued copy for real. **The only path in this feature that
  * signs an order, and it runs only from the user's click.**
  *
@@ -387,7 +461,7 @@ export async function placeCopy(
     return { status: "failed", error: "Connect your wallet before placing a copy." };
   }
 
-  // Cheap and first: an expired decision is not worth three network round
+  // Cheap and first: an expired decision is not worth five network round
   // trips. `checkCopyPreconditions` checks it again against a fresher clock.
   if (hasExpired(entry, Date.now())) {
     return { status: "cancelled", error: "Expired before it could be placed" };
@@ -396,11 +470,12 @@ export async function placeCopy(
   // In parallel: they are independent reads, and doing them in series would add
   // a second or more to a click the user is watching — during which the price
   // this copy is anchored on keeps moving.
-  const [preflight, marketOpen, availableUsd, tickSize] = await Promise.all([
+  const [preflight, marketOpen, availableUsd, tickSize, minOrderShares] = await Promise.all([
     runPreflight(entry),
     readMarketOpen(client, entry.slug),
     readAvailableUsd(client),
     readTickSize(client, entry.tokenId),
+    readMinOrderShares(client, entry.tokenId),
   ]);
 
   const check = checkCopyPreconditions({
@@ -408,6 +483,7 @@ export async function placeCopy(
     preflight,
     marketOpen,
     availableUsd,
+    minOrderShares,
     nowMs: Date.now(),
   });
   if (check.blocked) return check.patch;

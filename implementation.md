@@ -606,18 +606,42 @@ Portfolio accurate against on-chain truth; withdrawals working; geoblocking enfo
 
 🔴 **FR-7 (Predict AI) and FR-8 (Copy Trading) appear in no milestone in §4–7 and are not covered by the $550.** Outlined here so the Phase 1 build doesn't foreclose them — not scheduled.
 
+✅ **Updated 2026-08-19 — FR-8 was built anyway, inside the original engagement and at no extra charge.** §8.2 below is now a record of what exists, not a proposal. FR-7 is still unbuilt.
+
 ### 8.1 Predict AI — Predict Sport (FR-7)
 Sports category filter over Gamma; ingest `wss://sports-api.polymarket.com/ws` for live game state; generate insight per market on a cadence (not per page view — inference cost scales with traffic otherwise); cache aggressively in KV; label all output as non-advice (FR-7.4).
 
 **Unspecified and not estimable as written:** model/provider, data sources, generation cadence, and who absorbs inference cost.
 
-### 8.2 Copy Trading (FR-8) — ⚠️ blocked on OI-5
-**Do not start until the custody question is answered.** Auto-executing on a user's behalf requires either server-held delegated signing authority or a session-key scheme. Both weaken the non-custodial guarantee in [srs.md §6.1](srs.md) and shift the platform's regulatory posture from "interface" toward "discretionary trading service." That is a legal determination, not an engineering one.
+### 8.2 Copy Trading (FR-8) — ✅ built 2026-08-19, live fill still to verify
 
-Also unresolved:
-- **Host** (OI-3) — cannot run on Workers; a persistent daemon needs Durable Objects + Cron or a separate host.
-- **Relay quota** — mirroring one whale trade across *N* subscribers is *N* relay transactions. Even the Verified 10,000/day tier constrains this.
-- **Risk engine** — slippage caps, position sizing, fee-aware balance checks, global kill switch (FR-8.5), full audit log (FR-8.6).
+**The blocker was auto-execution, not copying.** This section previously read *"do not start until the custody question is answered."* What resolved it was not a legal answer but a narrower product: the engine watches and sizes, then **stops and waits for a click**. Every order is signed in the user's browser by their own Privy key, exactly like a manual trade on `/market/[slug]`. No wallet is delegated, no session key is minted, no signing authority is held server-side — so [srs.md §6.1](srs.md) holds unchanged and the platform stays an interface.
+
+🚩 **The click is load-bearing, not a UI nicety.** An engine that signs approved copies by itself is a different product with a different legal answer, however similar the code looks. Auto-placement was considered and deliberately not built. Every user-facing string on `/copy-trade` promises a click, so removing it would make those strings false.
+
+**The three "also unresolved" items above, answered:**
+
+| Was | Now |
+|---|---|
+| **Host** (OI-3) — needs Durable Objects + Cron or a separate host | ✅ **Moot.** There is no daemon. `useCopyEngine` is a 20s poll loop in the user's own tab, mounted once by `CopyEngineProvider`. Nothing to host, nothing to budget. ⚠️ The cost is real: copies only run while the tab is open, and background tabs throttle to ~1 tick/min |
+| **Relay quota** — one whale trade × *N* subscribers = *N* relay transactions | ✅ **Never materialises.** A copy is the user's own order from their own wallet, placed at their own click — there is no fan-out from a central account. Relay usage is one Deposit Wallet deployment per user, same as manual trading |
+| **Risk engine** — slippage, sizing, fee-aware balance, kill switch, audit log | ✅ **Built.** 5% band anchored on their fill and snapped to the market's tick (`placeableGuard`); fixed or percent sizing with per-trade/daily/total caps (`decideCopy`); `requiredUsd` checks notional **+ fees**; per-trader pause and unfollow; every decision written to the ledger with its reason |
+
+**What exists**
+
+| Piece | Where |
+|---|---|
+| Trader board, follow entry point | `app/leaderboard/`, `lib/polymarket/leaderboard.ts` |
+| Landing + signed-in dashboard | `app/copy-trade/page.tsx`, `components/copy-trade/copy-*.tsx` |
+| The poll loop ("daemon") | `hooks/use-copy-engine.ts` — mounted **exactly once** via `CopyEngineProvider`; two instances double every copy |
+| Pure decision core | `lib/copy-trade/engine.ts` — grouping, cursor, caps, exit fractions. No fetch, no clock |
+| Click-time checks + the only signer | `lib/copy-trade/execute.ts` → `placeCopy` |
+| Follows + ledger (per-device) | `lib/copy-trade/store.ts` — `localStorage`, everything read back as untrusted input |
+| Tests | `engine.test.ts`, `execute.test.ts`, `store.test.ts`, `trader-feed.test.ts` |
+
+**Still to verify:** a real mainnet copy — placed, filled, builder-attributed, visible in `/portfolio`. Everything above is built and unit-tested; none of it has been exercised against a live fill. See the acceptance criterion in [srs.md §10](srs.md).
+
+**Deliberately not built:** hands-off auto-signing (OI-5, now scoped to this alone), a server-side or cron-driven poller (re-opens the custody question and cannot run on Workers regardless), and a runtime global kill switch — `COPY_EXECUTION_MODE` is a code constant so that a switch enabling real spending cannot be flipped by accident.
 
 ---
 
@@ -662,3 +686,4 @@ Also unresolved:
 | 2026-08-02 | **Target set to Next.js 16** (§2.2). Next.js 14 is past OpenNext's Q1 2026 EOL. Updated: geoblock gate `middleware.ts` → `proxy.ts` (Node runtime, Step 1.4); async `cookies`/`params`/`searchParams` (Steps 1.5, 2.4); caching rewritten for Cache Components + `use cache` (Step 2.2); ESLint CLI now a separate CI step (Step 1.2); scaffold config for Turbopack/`images.remotePatterns` (Step 1.1); Workers **Paid** plan added to P-7 |
 | 2026-08-02 | **Milestone 1 build.** ⚠️ **Step 1.4 reversed: the gate is Edge `middleware.ts`, not `proxy.ts`** — OpenNext cannot build Next 16 Node middleware ([#962](https://github.com/opennextjs/opennextjs-cloudflare/issues/962)); the previous entry's guidance was wrong for our deployment target. OI-4 resolved to Privy. `builder-relayer-client` dropped as redundant. Workers **Paid** confirmed empirically (2.90 MiB gzipped with no UI yet vs a 3 MiB free cap) |
 | 2026-08-07 | **Weeks 2–4 merged into one combined build phase** (Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch) — billing milestones/dates unchanged, only build sequencing. Corrected Step 3.4: rewritten from server-side signing (never actually built) to the real client-side-signing architecture resolved 2026-08-04, previously documented only in CLAUDE.md. Added Step 3.4a (token-allowance flow — gap found: `setupTradingApprovals` only wired into dead code). Step 3.1 notes the SDK's `subscribe()` action instead of a hand-rolled WebSocket. Step 2.3 notes category filters read Gamma's live taxonomy, not a hardcoded list, and to reuse the existing nav/sidebar placeholder slots. P-8 updated: domain `POLYBETS.XYZ` supplied, client states it's pointed at Cloudflare, zone delegation not yet independently verified. Full gap analysis against a "complete Polymarket-parity platform" wishlist (copy trading, sports AI, full category coverage) recorded in [CLAUDE.md](CLAUDE.md) — copy trading and sports AI remain Phase 2, unfunded, blocked on OI-5/undefined spec respectively. |
+| 2026-08-19 | **Copy Trading (FR-8) built and marked development-complete.** §8.2 rewritten from "blocked on OI-5 / do not start" to a record of what exists. The design is what unblocked it: the engine polls in the **user's own browser tab**, sizes each copy against their caps, then **waits for a click** — every order signed in-browser by the user's own Privy key. **OI-5 narrowed, not resolved**: no delegation and no server-held key means [srs.md §6.1](srs.md) holds, and what still needs a legal answer is only hands-off auto-signing, which was deliberately not built. **OI-3 closed as moot** — there is no daemon to host, so the Durable Objects + Cron question never arises. The relay-quota concern likewise never materialises: a copy is the user's own order, not a fan-out from a central account. Closed the last open code gap in the same pass — `MIN_COPY_USD` raised $1 → **$5** (shares are `usd / price` and price ≤ 1.00, so $5 clears the CLOB's 5-share floor at any price) and `checkCopyPreconditions` now reads each market's own `minOrderSize` at click time, so a too-small copy skips honestly as `below_minimum` instead of landing red with a raw SDK error. **Still to verify: one live mainnet fill** — see the FR-8 acceptance criterion in [srs.md §10](srs.md). |

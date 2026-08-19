@@ -57,14 +57,26 @@ export type CopyExecutionMode = "simulated" | "live";
 export const COPY_MAX_SLIPPAGE = 0.05;
 
 /**
- * Our own floor on a copy's notional.
+ * Our own floor on a copy's notional, chosen to clear the CLOB's floor by
+ * arithmetic rather than by luck.
  *
- * ⚠️ This is **not** a verified Polymarket minimum — it is the point below
- * which a copy is not worth the fee. The CLOB has its own minimum and will
- * reject a too-small order upstream; that surfaces as `preflight_rejected`,
- * not as this. Do not present this number to a user as Polymarket's rule.
+ * 🚩 The CLOB's `min_order_size` is denominated in **shares**, not dollars —
+ * typically 5. Shares are `usd / price` and a price never exceeds `1.00`, so
+ * **$5 buys at least 5 shares at any price**, whatever the market. At the old
+ * value of $1 a copy could be sized perfectly legally by our own caps and then
+ * rejected upstream, landing as a red `failed` row carrying a raw SDK message:
+ *
+ * ```text
+ * $2 at price 0.90 -> 2.22 shares -> rejected
+ * $5 at price 0.99 -> 5.05 shares -> fine
+ * ```
+ *
+ * ⚠️ This still is not *the* Polymarket minimum, because that number is
+ * per-market and can be higher. `checkCopyPreconditions` reads the market's own
+ * `minOrderSize` at click time and skips honestly; this constant is the cheap
+ * layer that keeps almost every copy from reaching that check at all.
  */
-export const MIN_COPY_USD = 1;
+export const MIN_COPY_USD = 5;
 
 /**
  * How long an order is given to finish filling before we act on it.
@@ -256,7 +268,10 @@ export const SKIP_REASON_LABELS: Record<SkipReason, string> = {
   per_trade_cap: "Above your per-trade cap",
   daily_cap: "Daily cap reached",
   total_cap: "Total cap reached",
-  below_minimum: `Too small to place (under $${MIN_COPY_USD})`,
+  // Deliberately not interpolating MIN_COPY_USD: the same reason also covers a
+  // market whose own minimum is higher than our floor, so naming one figure
+  // would be wrong half the time.
+  below_minimum: "Too small to place",
   market_closed: "Market already settled",
   trader_paused: "Trader paused",
   no_position_to_exit: "You held none of this outcome",

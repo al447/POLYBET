@@ -83,7 +83,15 @@ export function FollowDialog({ trader, initial, onConfirm, onClose }: Props) {
   // each other — a daily cap below the per-trade cap would silently make the
   // per-trade cap unreachable.
   const problems: string[] = [];
-  if (!isPositive(values.size)) problems.push("Enter how much to copy per trade.");
+  if (!isPositive(values.size)) {
+    problems.push("Enter how much to copy per trade.");
+  } else if (mode === "fixed" && values.size < MIN_COPY_USD) {
+    // Only the fixed mode can be checked here. A percentage is a percentage of
+    // a trade nobody has made yet, so whether it lands above the floor is not
+    // knowable until the copy is sized — `engine.ts` skips it as
+    // `below_minimum` at that point.
+    problems.push(`Each copy must be at least $${MIN_COPY_USD} — Polymarket rejects smaller orders.`);
+  }
   if (!isPositive(values.perTrade) || values.perTrade < MIN_COPY_USD) {
     problems.push(`The per-trade cap must be at least $${MIN_COPY_USD}.`);
   }
@@ -141,7 +149,8 @@ export function FollowDialog({ trader, initial, onConfirm, onClose }: Props) {
               prefix="$"
               value={fixedUsd}
               onChange={setFixedUsd}
-              hint="The same amount every time, however large their trade was."
+              min={String(MIN_COPY_USD)}
+              hint={`The same amount every time, however large their trade was. Minimum $${MIN_COPY_USD}.`}
             />
           ) : (
             <Field
@@ -156,7 +165,13 @@ export function FollowDialog({ trader, initial, onConfirm, onClose }: Props) {
 
         <fieldset className="mt-6 space-y-3">
           <legend className="text-sm font-medium text-zinc-300">Hard limits</legend>
-          <Field label="Most per copy" prefix="$" value={perTrade} onChange={setPerTrade} />
+          <Field
+            label="Most per copy"
+            prefix="$"
+            value={perTrade}
+            onChange={setPerTrade}
+            min={String(MIN_COPY_USD)}
+          />
           <Field label="Most per day" prefix="$" value={daily} onChange={setDaily} />
           <Field label="Most at once" prefix="$" value={total} onChange={setTotal} />
         </fieldset>
@@ -225,6 +240,7 @@ function Field({
   prefix,
   suffix,
   hint,
+  min = "0",
 }: {
   label: string;
   value: string;
@@ -232,6 +248,8 @@ function Field({
   prefix?: string;
   suffix?: string;
   hint?: string;
+  /** Browser-side floor only — `problems` above is what actually blocks submit. */
+  min?: string;
 }) {
   return (
     <label className="mt-3 block">
@@ -241,7 +259,7 @@ function Field({
         <input
           type="number"
           inputMode="decimal"
-          min="0"
+          min={min}
           step="any"
           value={value}
           onChange={(event) => onChange(event.target.value)}

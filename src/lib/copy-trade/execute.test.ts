@@ -261,6 +261,93 @@ describe("checkCopyPreconditions — the live-only branches", () => {
 
     expect(check).toEqual({ blocked: false, feeBps: 50 });
   });
+
+  it("skips a buy under the market's own minimum instead of failing on it", () => {
+    // $1 at 0.32 is 3.1 shares, under a 5-share floor. Before this check the
+    // CLOB rejected it and the row landed red with a raw SDK message, which
+    // reads as a broken feature rather than an order that was never placeable.
+    const check = checkCopyPreconditions({
+      entry: buyEntry({ amountUsd: 1 }),
+      preflight: ALLOWED,
+      availableUsd: 100,
+      marketOpen: true,
+      minOrderShares: 5,
+      nowMs: NOW,
+    });
+
+    expect(check.blocked && check.patch.status).toBe("skipped");
+    expect(check.blocked && check.patch.skipReason).toBe("below_minimum");
+  });
+
+  it("lets a buy through once it clears the floor", () => {
+    // $10 at 0.32 is 31.25 shares.
+    const check = checkCopyPreconditions({
+      entry: buyEntry(),
+      preflight: ALLOWED,
+      availableUsd: 100,
+      marketOpen: true,
+      minOrderShares: 5,
+      nowMs: NOW,
+    });
+
+    expect(check.blocked).toBe(false);
+  });
+
+  it("reads a missing price anchor as 1.00 — the fewest shares — rather than dividing by zero", () => {
+    // $6 with no usable anchor counts as 6 shares, so it clears a floor of 5.
+    // The other direction would refuse a copy on a guess.
+    const check = checkCopyPreconditions({
+      entry: buyEntry({ amountUsd: 6, expectedPrice: undefined }),
+      preflight: ALLOWED,
+      availableUsd: 100,
+      minOrderShares: 5,
+      nowMs: NOW,
+    });
+
+    expect(check.blocked).toBe(false);
+  });
+
+  it("does not block when the minimum is unknown", () => {
+    // `null` is a failed read, `undefined` is the dry run never having looked.
+    // Neither is evidence the copy is too small, and refusing every copy on a
+    // failed lookup would make an RPC blip look like a permanent floor.
+    for (const minOrderShares of [null, undefined] as const) {
+      const check = checkCopyPreconditions({
+        entry: buyEntry({ amountUsd: 0.5 }),
+        preflight: ALLOWED,
+        availableUsd: 100,
+        minOrderShares,
+        nowMs: NOW,
+      });
+      expect(check.blocked).toBe(false);
+    }
+  });
+
+  it("applies the floor to a sell in shares directly, with no price involved", () => {
+    const check = checkCopyPreconditions({
+      entry: buyEntry({ side: "SELL", amountUsd: undefined, shares: 2 }),
+      preflight: ALLOWED,
+      availableUsd: 0,
+      minOrderShares: 5,
+      nowMs: NOW,
+    });
+
+    expect(check.blocked && check.patch.skipReason).toBe("below_minimum");
+  });
+
+  it("reports an empty wallet ahead of the size floor", () => {
+    // Both are true of a $1 copy with no pUSD. The empty wallet is the one the
+    // user can act on, so it is the one they read.
+    const check = checkCopyPreconditions({
+      entry: buyEntry({ amountUsd: 1 }),
+      preflight: ALLOWED,
+      availableUsd: 0,
+      minOrderShares: 5,
+      nowMs: NOW,
+    });
+
+    expect(check.blocked && check.patch.skipReason).toBe("insufficient_balance");
+  });
 });
 
 describe("priceGuard", () => {
