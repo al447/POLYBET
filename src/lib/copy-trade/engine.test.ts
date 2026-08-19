@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   decideCopy,
+  deployedUsdFor,
   groupFillsIntoIntents,
   selectCopyableIntents,
   summariseBudget,
@@ -167,6 +168,96 @@ describe("selectCopyableIntents", () => {
     expect(intents).toEqual([]);
     expect(nextCursor).toBe(1234);
   });
+
+  /**
+   * 🚩 The regression this function was rewritten for, 2026-08-19.
+   *
+   * An order whose fills straddle a second boundary used to be copied twice:
+   * the cursor advanced to the bucket's *earliest* fill, the later fills stayed
+   * eligible, and on the next tick they re-formed as a bucket under a different
+   * key — so the ledger's `intentKey` dedup never fired and each copy passed the
+   * caps on its own.
+   */
+  describe("an order whose fills straddle a second boundary", () => {
+    // One order, three fills, two timestamps. `/trades` keeps returning all of
+    // them on every poll, which is what makes the second tick reachable.
+    const straddling = [
+      trade({ timestamp: 1000, size: 100, price: 0.3, transactionHash: "0xaaa" }),
+      trade({ timestamp: 1000, size: 150, price: 0.31, transactionHash: "0xbbb" }),
+      trade({ timestamp: 1001, size: 50, price: 0.32, transactionHash: "0xccc" }),
+    ];
+
+    it("is one intent carrying every fill", () => {
+      const { intents, nextCursor } = selectCopyableIntents({
+        trades: straddling,
+        cursor: 500,
+        nowSeconds: 1010,
+      });
+
+      expect(intents).toHaveLength(1);
+      expect(intents[0].shares).toBe(300);
+      expect(intents[0].fillCount).toBe(3);
+      expect(nextCursor).toBe(1000);
+    });
+
+    it("is not copied again on the next tick", () => {
+      const first = selectCopyableIntents({
+        trades: straddling,
+        cursor: 500,
+        nowSeconds: 1010,
+      });
+      const second = selectCopyableIntents({
+        trades: straddling,
+        cursor: first.nextCursor,
+        nowSeconds: 1030,
+      });
+
+      expect(second.intents).toEqual([]);
+      expect(second.nextCursor).toBe(first.nextCursor);
+    });
+  });
+
+  it("still emits an intent held back by the settle delay once it ages in", () => {
+    // The case the cursor filter must not break: one intent inside the horizon
+    // and one outside it, where the outside one starts *later* than the cursor
+    // the inside one sets.
+    const spanning = [
+      trade({ timestamp: 1000, tokenId: "tok-a", transactionHash: "0xaaa" }),
+      trade({ timestamp: 1001, tokenId: "tok-b", transactionHash: "0xbbb" }),
+    ];
+
+    const first = selectCopyableIntents({
+      trades: spanning,
+      cursor: 0,
+      nowSeconds: 1005,
+      settleDelaySeconds: 5,
+    });
+    expect(first.intents.map((i) => i.tokenId)).toEqual(["tok-a"]);
+    expect(first.nextCursor).toBe(1000);
+
+    const second = selectCopyableIntents({
+      trades: spanning,
+      cursor: first.nextCursor,
+      nowSeconds: 1020,
+      settleDelaySeconds: 5,
+    });
+    expect(second.intents.map((i) => i.tokenId)).toEqual(["tok-b"]);
+    expect(second.nextCursor).toBe(1001);
+  });
+
+  it("does not re-copy a trade already past the cursor when newer ones arrive", () => {
+    const first = selectCopyableIntents({ trades, cursor: 0, nowSeconds: 9999 });
+    expect(first.intents.map((i) => i.timestamp)).toEqual([1000, 2000, 3000]);
+
+    // The same page, plus one new trade. Only the new one is copyable.
+    const withNewer = [...trades, trade({ timestamp: 4000, transactionHash: "0xddd" })];
+    const second = selectCopyableIntents({
+      trades: withNewer,
+      cursor: first.nextCursor,
+      nowSeconds: 9999,
+    });
+    expect(second.intents.map((i) => i.timestamp)).toEqual([4000]);
+  });
 });
 
 describe("summariseBudget", () => {
@@ -275,6 +366,41 @@ describe("summariseBudget", () => {
       NOW,
     );
     expect(budget).toEqual({ spentTodayUsd: 0, deployedUsd: 0 });
+  });
+
+  describe("deployedUsdFor", () => {
+    const ledger = [
+      entry({ id: "a", side: "BUY", amountUsd: 100, decidedAt: "2026-08-16T09:00:00.000Z" }),
+      entry({ id: "b", side: "SELL", amountUsd: 30, decidedAt: "2026-08-17T09:00:00.000Z" }),
+      entry({ id: "c", status: "skipped", amountUsd: 500 }),
+      entry({ id: "d", address: "0xother", amountUsd: 999 }),
+    ];
+
+    it("agrees with the figure summariseBudget reports", () => {
+      expect(deployedUsdFor(ledger, WTSA)).toBe(summariseBudget(ledger, WTSA, NOW).deployedUsd);
+      expect(deployedUsdFor(ledger, WTSA)).toBe(70);
+    });
+
+    /**
+     * The property the split exists for: `CopyStats` renders this figure, and
+     * reaching for it through `summariseBudget` meant passing `Date.now()`
+     * during render for a number that never depended on it.
+     */
+    it("is the same answer whatever the clock says", () => {
+      const longAgo = Date.parse("2020-01-01T00:00:00.000Z");
+      const farFuture = Date.parse("2099-01-01T00:00:00.000Z");
+
+      expect(summariseBudget(ledger, WTSA, longAgo).deployedUsd).toBe(70);
+      expect(summariseBudget(ledger, WTSA, NOW).deployedUsd).toBe(70);
+      expect(summariseBudget(ledger, WTSA, farFuture).deployedUsd).toBe(70);
+
+      // …while the daily figure, sharing the same rows, moves with the clock —
+      // which is what makes passing an arbitrary one at a render site a bug
+      // waiting to be read rather than a harmless argument.
+      expect(summariseBudget(ledger, WTSA, longAgo).spentTodayUsd).toBe(100);
+      expect(summariseBudget(ledger, WTSA, NOW).spentTodayUsd).toBe(0);
+      expect(summariseBudget(ledger, WTSA, farFuture).spentTodayUsd).toBe(0);
+    });
   });
 });
 

@@ -138,6 +138,27 @@ export function groupFillsIntoIntents(
  *    Holding anything younger than the delay means an order has finished before
  *    it is ever considered.
  *
+ * 🚩 **Grouping happens over the whole page, and the cursor filters the
+ * intents — never the trades.** Filtering first looks equivalent and is not: a
+ * bucket is named after its earliest fill, so dropping that fill re-forms the
+ * same order as a *new* bucket under a *new* key. Fixed 2026-08-19 after this
+ * was measured double-copying one order across two ticks:
+ *
+ * ```text
+ * // fills at t=1000, t=1000, t=1001 — one order
+ * tick 1 (cursor 500)  -> 0xabc:tok1:BUY:1000, 300 shares, cursor -> 1000
+ * tick 2 (cursor 1000) -> 0xabc:tok1:BUY:1001,  50 shares   ← the tail, again
+ * ```
+ *
+ * The two keys differ, so the ledger's `intentKey` dedup could not catch it and
+ * each copy passed the caps on its own. Grouping the full page keeps a given
+ * order's bucket start stable across ticks, which is what makes that dedup a
+ * real backstop rather than an accident of timing.
+ *
+ * The remaining asymmetry is deliberate: a fill that lands *after* its bucket
+ * was already emitted joins that bucket and is not copied again. Under-copying,
+ * which is the direction {@link SETTLE_DELAY_SECONDS} already chose.
+ *
  * `nextCursor` only ever advances to the newest intent actually returned, never
  * to the newest trade seen — otherwise the held-back tail would be skipped
  * permanently rather than picked up on the following tick.
@@ -152,9 +173,8 @@ export function selectCopyableIntents(input: {
   const settleDelay = input.settleDelaySeconds ?? SETTLE_DELAY_SECONDS;
   const horizon = input.nowSeconds - settleDelay;
 
-  const fresh = input.trades.filter((trade) => trade.timestamp > input.cursor);
-  const intents = groupFillsIntoIntents(fresh, input.groupWindowSeconds).filter(
-    (intent) => intent.timestamp <= horizon,
+  const intents = groupFillsIntoIntents(input.trades, input.groupWindowSeconds).filter(
+    (intent) => intent.timestamp > input.cursor && intent.timestamp <= horizon,
   );
 
   const nextCursor = intents.reduce((max, intent) => Math.max(max, intent.timestamp), input.cursor);
@@ -198,30 +218,46 @@ export function summariseBudget(
   const dayStart = utcDayStartMs(nowMs);
 
   let spentTodayUsd = 0;
+
+  for (const entry of entries) {
+    if (!countsTowardBudget(entry, address)) continue;
+    // Only opening a position spends the daily budget. An exit returns money;
+    // charging the day's cap for it would punish the user for closing.
+    if (entry.side !== "BUY") continue;
+    if (Date.parse(entry.decidedAt) >= dayStart) spentTodayUsd += entry.amountUsd as number;
+  }
+
+  return { spentTodayUsd, deployedUsd: deployedUsdFor(entries, address) };
+}
+
+/**
+ * Cost basis still committed to one trader — the `deployedUsd` half of
+ * {@link summariseBudget}, split out because **it does not depend on the clock**.
+ *
+ * That matters at the call site, not here. `CopyStats` renders this figure and
+ * used to reach for it through `summariseBudget(ledger, address, Date.now())`,
+ * passing a timestamp that could not affect the answer — an impurity during
+ * render (`react-hooks/purity`) bought for nothing. A component that needs the
+ * deployed figure should be able to ask for exactly that.
+ */
+export function deployedUsdFor(entries: readonly CopyLedgerEntry[], address: string): number {
   let boughtUsd = 0;
   let soldUsd = 0;
 
   for (const entry of entries) {
-    if (entry.address !== address) continue;
-    if (!BUDGET_STATUSES.has(entry.status)) continue;
-
-    const amount = Number.isFinite(entry.amountUsd) ? (entry.amountUsd as number) : 0;
-    if (amount <= 0) continue;
-
-    if (entry.side === "BUY") {
-      boughtUsd += amount;
-      // Only opening a position spends the daily budget. An exit returns money;
-      // charging the day's cap for it would punish the user for closing.
-      if (Date.parse(entry.decidedAt) >= dayStart) spentTodayUsd += amount;
-    } else {
-      soldUsd += amount;
-    }
+    if (!countsTowardBudget(entry, address)) continue;
+    if (entry.side === "BUY") boughtUsd += entry.amountUsd as number;
+    else soldUsd += entry.amountUsd as number;
   }
 
-  return {
-    spentTodayUsd,
-    deployedUsd: Math.max(0, boughtUsd - soldUsd),
-  };
+  return Math.max(0, boughtUsd - soldUsd);
+}
+
+/** One trader's rows that represent committed money, with a usable amount on them. */
+function countsTowardBudget(entry: CopyLedgerEntry, address: string): boolean {
+  if (entry.address !== address) return false;
+  if (!BUDGET_STATUSES.has(entry.status)) return false;
+  return Number.isFinite(entry.amountUsd) && (entry.amountUsd as number) > 0;
 }
 
 /**

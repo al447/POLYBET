@@ -252,6 +252,22 @@ export function useCopyEngine(): CopyEngine {
 
   // localStorage is read in an effect, never during render: reading it while
   // rendering would make the server and client markup disagree.
+  //
+  // `react-hooks/set-state-in-effect` is disabled here deliberately. The rule's
+  // own remedy — subscribe to the external system with `useSyncExternalStore` —
+  // does not fit: this is a **one-shot hydration read**, not a subscription, and
+  // the engine owns `followsRef`/`ledgerRef` as the source of truth that the
+  // poll loop mutates directly. Routing that ownership through an external store
+  // is a real refactor of this hook, not a lint fix, and there is nothing to
+  // subscribe to — no other tab writes these keys mid-session.
+  //
+  // The cascading render the rule warns about is one extra pass, once per mount,
+  // which `hydrated` already exists to gate the UI through.
+  //
+  // Disabled as a block, not with `eslint-disable-next-line`: the rule reports
+  // the `setFollows` **call**, not the `useEffect` it sits in, so a directive
+  // above the hook suppresses nothing and is itself flagged as unused.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const storedFollows = readFollows();
     const storedLedger = readLedger();
@@ -261,6 +277,7 @@ export function useCopyEngine(): CopyEngine {
     setLedger(storedLedger);
     setHydrated(true);
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   /**
    * One pass over every active trader.

@@ -442,8 +442,33 @@ Six things to keep straight:
 - **🚩 The click is the load-bearing part, not a UI nicety.** An engine that signs approved copies by itself is a different product with a different legal answer, however similar the code looks. Auto-placement was considered and deliberately not built (decision 2026-08-19); every user-facing string — `FollowDialog`, `EngineStatusBar`, `CopyQueue` — promises a click, so removing it silently would make those strings lies.
 - **Everything is re-checked at click time and nothing is reused from the decision except the size.** A queued row's preflight answer, market state and balance are all restated in `placeCopy`; a five-minute-old preflight says nothing about now. `checkCopyPreconditions` is shared by the dry run and the live click precisely so the two cannot drift.
 - **`market_closed` now fires** — `isMarketAcceptingOrders` (`browser-client.ts`) reads it at click time. ⚠️ Both flags live under **`market.state`**, not on the market: the SDK restructures Gamma's flat JSON, so `market.closed` is `undefined` and reads as open. `decideCopy`'s `marketClosed` parameter is still unwired in the poll loop, which is fine — the click is where a fresh answer exists.
-- **Copies carry a price guard** (`COPY_MAX_SLIPPAGE`, 5% around the trader's own fill), so a click can legitimately produce no position. A copy that cannot fill inside the band lands as `failed` with the reason visible — that is the guard working, not a bug.
+- **Copies carry a price guard** (`COPY_MAX_SLIPPAGE`, 5% around the trader's own fill, plus up to one tick from the snapping below), so a click can legitimately produce no position. A copy that cannot fill inside the band lands as `failed` with the reason visible — that is the guard working, not a bug.
+
+- **🚩 A price bound must be snapped to the market's OWN tick size, and tick size is per-market.** Found and fixed 2026-08-19, before the first live copy. `priceGuard` formatted the bound with `.toFixed(3)` and its comment claimed *"three decimals … is the CLOB's price granularity"* — it is not. Sampled ten markets that live leaderboard traders had just traded: **nine had `tick_size: 0.01`**, and **7 of 10 bounds were rejected** by the SDK *before the order was signed*:
+
+  ```
+  maxPrice must conform to tick size 0.01 with at most 2 decimal places.
+  ```
+
+  The validator is `nr()` in `@polymarket/client`, reached via `placeMarketOrder`, and it throws on three separate counts: outside `[tick, 1 - tick]`, more decimals than the tick has, or not a whole multiple of the tick. Note the old `clampPrice` range `[0.001, 0.999]` is *outside* the legal range on any market coarser than 0.001, so high anchors failed the range check instead.
+
+  ⚠️ **It failed intermittently, which is what made it dangerous.** `PositiveDecimalNumberSchema` coerces the string to a number, so `"0.420"` arrives as `0.42` and passes while `"0.336"` throws — the old code worked about 1 time in 10, depending on whether the third decimal happened to be zero.
+
+  `quantiseToTick` (`execute.ts`) now snaps the bound, rounding **up for a buy, down for a sell** (both = "keep the copy placeable"; the opposite direction buys silent no-fills). Two things in it are load-bearing and look like noise: the result goes through `toFixed(decimals)` because `34 * 0.01` is `0.34000000000000002`, and the *quotient* is de-noised before rounding because `0.29 / 0.01` is `28.999999999999996` and `0.34 / 0.01` is `34.000000000000004` — a bare floor/ceil moves an already-on-grid price a full tick the wrong way. Verified by porting `nr()` out of the SDK bundle and running 3,996 anchor × tick × direction combinations through it: all accepted.
+
+  `priceGuard` now returns the **intended** band only and is display-only; `placeableGuard(entry, tickSize)` is what an order may carry. A `null` tick sends **no guard** rather than an invalid one — unguarded is worse than guarded, but invalid fails 100% of the time.
+
+- **⚠️ `MIN_COPY_USD = 1` is well below Polymarket's real floor.** The CLOB's `min_order_size` is **5 shares** — $2.50 at a price of 0.50, $4.50 at 0.90 — so a $1–2 copy is rejected upstream and lands as `failed` rather than skipping cleanly as `below_minimum`. Size test copies at **$5 or more**. Wiring `minOrderSize` into `decideCopy` so it skips honestly is still to do.
 - **The ledger and follow list live in `localStorage`, per-device.** Cleared site data loses them. `store.ts` treats everything it reads back as untrusted input for that reason — most importantly a corrupt cursor normalises to `null` ("seed me"), never `0`, which would mean *replay this trader's entire history as live orders*.
+
+- **🚩 In `selectCopyableIntents`, group the whole page FIRST and let the cursor filter the *intents*. Filtering the trades first double-copies orders.** Found and fixed 2026-08-19. A bucket is named after its earliest fill (`address:tokenId:side:timestamp`), so dropping that fill by cursor makes the same order re-form as a **new bucket under a new key** — which the ledger's `intentKey` dedup cannot catch, and which passes the caps a second time. Measured on one order with fills at t=1000, t=1000, t=1001:
+
+  ```text
+  tick 1 (cursor 500)  -> 0xabc:tok1:BUY:1000, 300 shares, cursor -> 1000
+  tick 2 (cursor 1000) -> 0xabc:tok1:BUY:1001,  50 shares   ← the tail, copied again
+  ```
+
+  It needs a fill to land across a second boundary, which the 2026-08-17 sample happened not to show — but the 2s grouping window exists precisely for that case, so it was reachable in production. The user's click is the only reason it was not silent: both rows queue, and the second reads as an ordinary separate trade. Pinned by `engine.test.ts` → "an order whose fills straddle a second boundary". Grouping the full 100-row page each tick is what makes the bucket start stable across ticks; the cost is nothing and the `intentKey` dedup becomes a real backstop instead of an accident of timing.
 
 ---
 

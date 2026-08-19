@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { checkCopyPreconditions, hasExpired, planResolution, priceGuard, requiredUsd } from "./execute";
+import {
+  checkCopyPreconditions,
+  hasExpired,
+  placeableGuard,
+  planResolution,
+  priceGuard,
+  quantiseToTick,
+  requiredUsd,
+} from "./execute";
 import { QUEUE_EXPIRY_MS, type CopyLedgerEntry } from "./types";
 
 /**
@@ -267,13 +275,11 @@ describe("priceGuard", () => {
     });
   });
 
-  it("stays inside the CLOB's valid price range", () => {
-    // 0.98 + 5% is 1.029, which is not a price that exists.
-    expect(priceGuard(buyEntry({ expectedPrice: 0.98 }))).toEqual({ maxPrice: "0.999" });
-    // 0.001 less 5% rounds below the minimum tick, so it clamps back up to it.
-    expect(priceGuard(buyEntry({ side: "SELL", expectedPrice: 0.001 }))).toEqual({
-      minPrice: "0.001",
-    });
+  it("is the intended band only, and may sit outside the tradeable range", () => {
+    // 0.98 + 5% is 1.029, which is not a price that exists. Clamping is
+    // `quantiseToTick`'s job now, because the real bounds are `[tick, 1 - tick]`
+    // and this function does not know the tick.
+    expect(priceGuard(buyEntry({ expectedPrice: 0.98 }))).toEqual({ maxPrice: "1.029" });
   });
 
   it("sends no guard at all when the anchor price is unusable", () => {
@@ -281,6 +287,113 @@ describe("priceGuard", () => {
     // of that market would silently fail to fill. Unguarded is the lesser evil.
     for (const expectedPrice of [undefined, 0, 1, Number.NaN]) {
       expect(priceGuard(buyEntry({ expectedPrice }))).toEqual({});
+    }
+  });
+});
+
+describe("quantiseToTick", () => {
+  it("snaps a three-decimal bound onto a 0.01 grid", () => {
+    // 🚩 The measured regression: nine markets in ten have a 0.01 tick, and the
+    // SDK rejects `"0.336"` there with "must conform to tick size 0.01 with at
+    // most 2 decimal places" — before the order is ever signed.
+    expect(quantiseToTick(0.336, 0.01, "up")).toBe("0.34");
+  });
+
+  it("does not leak binary floating point into the price", () => {
+    // `34 * 0.01` is 0.34000000000000002, which fails the SDK's decimal check
+    // far more spectacularly than the three-decimal bug it replaced.
+    const result = quantiseToTick(0.336, 0.01, "up");
+    expect(result).toBe("0.34");
+    expect(Number(result)).toBe(0.34);
+  });
+
+  it("rounds a buy up and a sell down, so the copy stays placeable", () => {
+    expect(quantiseToTick(0.336, 0.01, "up")).toBe("0.34");
+    expect(quantiseToTick(0.304, 0.01, "down")).toBe("0.30");
+  });
+
+  it("keeps three decimals on a market whose tick is 0.001", () => {
+    expect(quantiseToTick(0.336, 0.001, "up")).toBe("0.336");
+  });
+
+  it("clamps to [tick, 1 - tick], not to [0.001, 0.999]", () => {
+    // The old clamp produced 0.999 on a 0.01 market, which the SDK rejects on
+    // its range check rather than its decimals check — same dead end.
+    expect(quantiseToTick(1.029, 0.01, "up")).toBe("0.99");
+    expect(quantiseToTick(0.0004, 0.01, "down")).toBe("0.01");
+  });
+
+  it("leaves a price already on the grid where it is", () => {
+    // Binary floating point makes this the trap it is: `0.34 / 0.01` is
+    // 34.000000000000004 and `0.29 / 0.01` is 28.999999999999996, so a naive
+    // ceil/floor moves both by a full tick in the wrong direction.
+    expect(quantiseToTick(0.34, 0.01, "up")).toBe("0.34");
+    expect(quantiseToTick(0.29, 0.01, "down")).toBe("0.29");
+    expect(quantiseToTick(0.07, 0.01, "up")).toBe("0.07");
+  });
+
+  it("returns null for a tick it cannot use", () => {
+    expect(quantiseToTick(0.5, 0, "up")).toBeNull();
+    expect(quantiseToTick(0.5, Number.NaN, "up")).toBeNull();
+    expect(quantiseToTick(Number.NaN, 0.01, "up")).toBeNull();
+  });
+
+  /**
+   * The SDK's `nr()` throws on three separate conditions. Asserting them as
+   * properties across the whole price range is what makes this a fix rather
+   * than six examples that happen to pass.
+   */
+  it.each([0.01, 0.001])("always satisfies every rule the SDK enforces (tick %s)", (tick) => {
+    const decimals = String(tick).split(".")[1].length;
+
+    for (let anchor = 0.001; anchor < 1; anchor += 0.001) {
+      for (const direction of ["up", "down"] as const) {
+        const raw = anchor * (direction === "up" ? 1.05 : 0.95);
+        const value = quantiseToTick(raw, tick, direction);
+        expect(value).not.toBeNull();
+
+        const n = Number(value);
+        // 1. within [tick, 1 - tick]
+        expect(n).toBeGreaterThanOrEqual(tick);
+        expect(n).toBeLessThanOrEqual(1 - tick);
+        // 2. no more decimal places than the tick has — counted off the number,
+        //    which is what the SDK sees after its schema coerces the string.
+        const seen = String(n).includes(".") ? String(n).split(".")[1].length : 0;
+        expect(seen).toBeLessThanOrEqual(decimals);
+        // 3. a whole multiple of the tick
+        const scale = 10 ** decimals;
+        expect(Math.round(n * scale) % Math.round(tick * scale)).toBe(0);
+      }
+    }
+  });
+});
+
+describe("placeableGuard", () => {
+  it("snaps the intended band onto the market grid", () => {
+    expect(placeableGuard(buyEntry(), 0.01)).toEqual({ maxPrice: "0.34" });
+    expect(placeableGuard(buyEntry({ side: "SELL", expectedPrice: 0.32 }), 0.01)).toEqual({
+      minPrice: "0.30",
+    });
+  });
+
+  it("sends no guard when the tick could not be read", () => {
+    // An unguarded copy is worse than a guarded one — but an *invalid* guard
+    // fails every single time, which is worse than both.
+    expect(placeableGuard(buyEntry(), null)).toEqual({});
+  });
+
+  it("sends no guard when the anchor was unusable to begin with", () => {
+    expect(placeableGuard(buyEntry({ expectedPrice: Number.NaN }), 0.01)).toEqual({});
+  });
+
+  it("would have placed every one of the fills that used to be rejected", () => {
+    // The exact anchors sampled from live leaderboard traders on 2026-08-19,
+    // seven of which the SDK refused under the old three-decimal format.
+    for (const anchor of [0.5918, 0.29, 0.5, 0.5513, 0.53, 0.4104, 0.43]) {
+      const { maxPrice } = placeableGuard(buyEntry({ expectedPrice: anchor }), 0.01);
+      expect(maxPrice).toBeDefined();
+      expect(Number(maxPrice)).toBeGreaterThan(anchor);
+      expect(String(Number(maxPrice)).split(".")[1]?.length ?? 0).toBeLessThanOrEqual(2);
     }
   });
 });

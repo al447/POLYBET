@@ -166,21 +166,109 @@ export type PriceGuard = { maxPrice?: string; minPrice?: string };
  * garbage anchor would set `maxPrice` somewhere arbitrary and every copy of
  * that market would silently fail to fill.
  *
- * Three decimals because that is the CLOB's price granularity; more would be
- * rejected as an invalid tick.
+ * ⚠️ **This is the intended band, not a placeable one.** Prices must sit on the
+ * market's tick grid, and that grid differs per market — see
+ * {@link quantiseToTick}, which `placeCopy` applies once it knows the tick.
+ * What comes out of here is safe to *display* and never safe to send.
  */
 export function priceGuard(entry: CopyLedgerEntry): PriceGuard {
   const anchor = entry.expectedPrice;
   if (!Number.isFinite(anchor) || (anchor as number) <= 0 || (anchor as number) >= 1) return {};
 
   return entry.side === "BUY"
-    ? { maxPrice: clampPrice((anchor as number) * (1 + COPY_MAX_SLIPPAGE)).toFixed(3) }
-    : { minPrice: clampPrice((anchor as number) * (1 - COPY_MAX_SLIPPAGE)).toFixed(3) };
+    ? { maxPrice: ((anchor as number) * (1 + COPY_MAX_SLIPPAGE)).toFixed(3) }
+    : { minPrice: ((anchor as number) * (1 - COPY_MAX_SLIPPAGE)).toFixed(3) };
 }
 
-/** Keeps a guard inside the CLOB's valid price range, which is exclusive of 0 and 1. */
-function clampPrice(value: number): number {
-  return Math.min(Math.max(value, 0.001), 0.999);
+/**
+ * 🚩 Snaps a price bound onto one market's tick grid.
+ *
+ * Without this, **most copies never reach the CLOB at all.** The SDK validates
+ * `maxPrice`/`minPrice` against the market's tick size before signing
+ * (`nr()` in `@polymarket/client`) and throws on three separate counts: a value
+ * outside `[tick, 1 - tick]`, more decimal places than the tick has, or a value
+ * that is not a whole multiple of the tick.
+ *
+ * Measured 2026-08-19 across ten markets that live leaderboard traders had just
+ * traded: **nine had a tick of `0.01`**, and **seven of ten** bounds produced by
+ * a plain three-decimal format were rejected —
+ * `maxPrice must conform to tick size 0.01 with at most 2 decimal places.`
+ *
+ * Worse, it failed *intermittently*. The SDK coerces the string to a number, so
+ * `"0.420"` arrives as `0.42` and passes while `"0.336"` throws — meaning the
+ * old code worked roughly one time in ten, depending on whether the third
+ * decimal happened to be zero. That is the failure mode this function exists to
+ * remove.
+ *
+ * @param direction `"up"` for a BUY `maxPrice`, `"down"` for a SELL `minPrice` —
+ * both meaning "keep the copy placeable". Rounding the other way tightens the
+ * band by up to one tick and buys silent no-fills, which `priceGuard` above
+ * already argues is the worse outcome. The cost is that the effective band is
+ * {@link COPY_MAX_SLIPPAGE} plus up to one tick — at most a cent on a `0.01`
+ * market.
+ */
+export function quantiseToTick(
+  price: number,
+  tickSize: number,
+  direction: "up" | "down",
+): string | null {
+  if (!Number.isFinite(price) || !Number.isFinite(tickSize) || tickSize <= 0) return null;
+
+  const decimals = decimalsOf(tickSize);
+
+  // 🚩 The quotient is de-noised before rounding, and it matters in both
+  // directions. `0.29 / 0.01` is 28.999999999999996, so a bare `Math.floor`
+  // gives 0.28 — a sell bound a full tick tighter than asked for. `0.34 / 0.01`
+  // is 34.000000000000004, so a bare `Math.ceil` gives 0.35. Nine decimal
+  // places is far below any real tick and far above the noise.
+  const quotient = Math.round((price / tickSize) * 1e9) / 1e9;
+  const steps = direction === "up" ? Math.ceil(quotient) : Math.floor(quotient);
+
+  // The SDK's accepted range is `[tick, 1 - tick]` — not the `[0.001, 0.999]`
+  // this used to clamp to, which is *outside* it on any market coarser than
+  // 0.001 and throws on the range check instead of the decimals one.
+  const clamped = Math.min(Math.max(steps * tickSize, tickSize), 1 - tickSize);
+
+  // `toFixed` is load-bearing, not cosmetic: `34 * 0.01` is 0.34000000000000002
+  // in binary floating point, which fails the SDK's decimal-count check far more
+  // spectacularly than the bug being fixed here.
+  return clamped.toFixed(decimals);
+}
+
+/** Decimal places in a tick size — `0.01` → 2. Drives both the rounding and the output format. */
+function decimalsOf(tickSize: number): number {
+  const text = String(tickSize);
+  // Ticks are small decimals in practice, but `String(1e-7)` is exponential and
+  // would otherwise be counted as zero decimals.
+  if (text.includes("e") || text.includes("E")) {
+    const [, exponent = "0"] = text.toLowerCase().split("e");
+    return Math.max(0, -Number.parseInt(exponent, 10));
+  }
+  const [, fraction = ""] = text.split(".");
+  return fraction.length;
+}
+
+/**
+ * The bound actually sent with an order: the intended band, snapped to this
+ * market's grid.
+ *
+ * `null` tick — the lookup failed — deliberately yields **no guard at all**
+ * rather than an unsnapped one. An unguarded copy is worse than a guarded one,
+ * but an invalid guard fails 100% of the time, which is worse than both.
+ */
+export function placeableGuard(entry: CopyLedgerEntry, tickSize: number | null): PriceGuard {
+  if (tickSize === null) return {};
+
+  const intended = priceGuard(entry);
+  if (intended.maxPrice !== undefined) {
+    const maxPrice = quantiseToTick(Number(intended.maxPrice), tickSize, "up");
+    return maxPrice === null ? {} : { maxPrice };
+  }
+  if (intended.minPrice !== undefined) {
+    const minPrice = quantiseToTick(Number(intended.minPrice), tickSize, "down");
+    return minPrice === null ? {} : { minPrice };
+  }
+  return {};
 }
 
 /* ------------------------------------------------------------------ *
@@ -248,6 +336,28 @@ export async function readMarketOpen(
 }
 
 /**
+ * This market's price grid, or `null` when it could not be read.
+ *
+ * The SDK's own `fetchTickSize` rather than a number of ours, because it is the
+ * same value the SDK validates the guard against — deriving it independently
+ * would be a second source of truth for the one field that decides whether an
+ * order is signable. See {@link quantiseToTick}.
+ */
+export async function readTickSize(
+  client: BrowserClient | null,
+  tokenId: string,
+): Promise<number | null> {
+  if (!client) return null;
+  try {
+    const { fetchTickSize } = await import("@polymarket/client/actions");
+    const tickSize = await fetchTickSize(client, { tokenId });
+    return Number.isFinite(Number(tickSize)) ? Number(tickSize) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * 🚩 Places one queued copy for real. **The only path in this feature that
  * signs an order, and it runs only from the user's click.**
  *
@@ -286,10 +396,11 @@ export async function placeCopy(
   // In parallel: they are independent reads, and doing them in series would add
   // a second or more to a click the user is watching — during which the price
   // this copy is anchored on keeps moving.
-  const [preflight, marketOpen, availableUsd] = await Promise.all([
+  const [preflight, marketOpen, availableUsd, tickSize] = await Promise.all([
     runPreflight(entry),
     readMarketOpen(client, entry.slug),
     readAvailableUsd(client),
+    readTickSize(client, entry.tokenId),
   ]);
 
   const check = checkCopyPreconditions({
@@ -303,7 +414,9 @@ export async function placeCopy(
 
   try {
     const { placeMarketBuy, placeMarketSell } = await import("@/lib/polymarket/browser-client");
-    const guard = priceGuard(entry);
+    // Snapped to this market's tick, not the raw band — an unsnapped bound is
+    // rejected before the order is ever signed. See `quantiseToTick`.
+    const guard = placeableGuard(entry, tickSize);
 
     // USD for a buy, shares for a sell — the same split `CopyDecision` records
     // and `/api/orders` expects, carried through unchanged so no call site has

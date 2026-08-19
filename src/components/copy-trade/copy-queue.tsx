@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { CopyEngine } from "@/hooks/use-copy-engine";
+import { useNow } from "@/hooks/use-now";
 import { priceGuard } from "@/lib/copy-trade/execute";
 import {
   COPY_EXECUTION_MODE,
@@ -42,53 +43,75 @@ type Props = { engine: CopyEngine };
 
 type Approvals = "unknown" | "checking" | "ready" | "needed" | "granting" | "error";
 
+/** The subset that is an actual answer about a wallet, rather than a phase of asking. */
+type Settled = "ready" | "needed" | "error";
+
+/** The engine's connected client, non-null — `CopyEngine["client"]` includes `null`. */
+type ClientOf<T extends { client: unknown }> = NonNullable<T["client"]>;
+
 export function CopyQueue({ engine }: Props) {
   const { queue, client, walletStatus, connectWallet, placing, placeQueued, dismissQueued } = engine;
-  const [approvals, setApprovals] = useState<Approvals>("unknown");
+
+  /**
+   * The approvals answer, **tagged with the client it is about**.
+   *
+   * Deriving `approvals` from this rather than storing it directly is what makes
+   * "a different client means re-check" true without resetting state inside an
+   * effect: a new (or absent) client simply fails the identity test below and
+   * reads as `"unknown"` again. `"checking"` is likewise never stored — it *is*
+   * "we should have an answer for this client and do not yet".
+   */
+  const [checked, setChecked] = useState<{ for: ClientOf<CopyEngine>; state: Settled } | null>(null);
+  const [granting, setGranting] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
+
+  const settled = checked && checked.for === client ? checked.state : null;
+  const approvals: Approvals =
+    !client || queue.length === 0
+      ? "unknown"
+      : granting
+        ? "granting"
+        : (settled ?? "checking");
 
   // Only checked when there is something to place. It is a network read on the
   // user's wallet, and a dashboard with an empty queue has no reason to make it.
   useEffect(() => {
-    // Back to unknown when the wallet goes away, so a reconnect re-checks
-    // rather than trusting an answer about a client that no longer exists.
-    if (!client) {
-      setApprovals("unknown");
-      return;
-    }
-    if (queue.length === 0 || approvals !== "unknown") return;
+    if (!client || queue.length === 0) return;
+    if (checked && checked.for === client) return;
 
     let cancelled = false;
-    setApprovals("checking");
     void (async () => {
       try {
         const { hasTradingApprovals } = await import("@/lib/polymarket/browser-client");
         const granted = await hasTradingApprovals(client);
-        if (!cancelled) setApprovals(granted ? "ready" : "needed");
+        if (!cancelled) setChecked({ for: client, state: granted ? "ready" : "needed" });
       } catch {
         // A failed check must not block placing. The check is a heuristic (see
         // `hasTradingApprovals`); the CLOB is the real authority, and its
         // rejection is a better answer than a button we disabled on a guess.
-        if (!cancelled) setApprovals("error");
+        if (!cancelled) setChecked({ for: client, state: "error" });
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [client, queue.length, approvals]);
+  }, [client, queue.length, checked]);
 
   const grantApprovals = useCallback(async () => {
     if (!client) return;
-    setApprovals("granting");
+    setGranting(true);
     setApprovalError(null);
     try {
       const { enableTradingApprovals } = await import("@/lib/polymarket/browser-client");
       await enableTradingApprovals(client);
-      setApprovals("ready");
+      setChecked({ for: client, state: "ready" });
     } catch (error) {
-      setApprovals("needed");
+      // Left as whatever it was — a failed grant means approvals are still
+      // needed, which is exactly what the existing answer already says.
       setApprovalError(error instanceof Error ? error.message : "Could not enable trading.");
+    } finally {
+      setGranting(false);
     }
   }, [client]);
 
@@ -202,7 +225,12 @@ function QueueRow({
   onDismiss: () => void;
 }) {
   const remaining = useTimeLeft(entry.decidedAt);
-  const guard = priceGuard(entry);
+  // The *intended* band. The bound actually sent is snapped to the market's
+  // tick at click time (`placeableGuard`), which needs a lookup per market and
+  // is not worth one request per queued row to preview. Shown to 2dp because
+  // that is the grid nine markets in ten are on, so the displayed number is the
+  // real one in the common case and never more than a cent off in the rest.
+  const guard = displayGuard(entry);
   const size =
     entry.side === "BUY"
       ? entry.amountUsd !== undefined
@@ -254,6 +282,14 @@ function QueueRow({
   );
 }
 
+/** The intended price band at two decimals — see the note at the call site on why not the exact bound. */
+function displayGuard(entry: CopyLedgerEntry): { maxPrice?: string; minPrice?: string } {
+  const guard = priceGuard(entry);
+  if (guard.maxPrice !== undefined) return { maxPrice: Number(guard.maxPrice).toFixed(2) };
+  if (guard.minPrice !== undefined) return { minPrice: Number(guard.minPrice).toFixed(2) };
+  return {};
+}
+
 /** `1.5` shares reads better than `1.5000000000000002`, which is what the exit fraction produces. */
 function trimShares(shares: number | undefined): string {
   if (shares === undefined || !Number.isFinite(shares)) return "—";
@@ -268,17 +304,16 @@ function trimShares(shares: number | undefined): string {
  * frozen at "0s" would suggest otherwise.
  */
 function useTimeLeft(decidedAt: string): string {
-  const [, tick] = useState(0);
-
-  useEffect(() => {
-    const id = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(id);
-  }, []);
+  // Subscribed rather than read during render — see `useNow`. It owns the
+  // once-a-second interval this hook used to keep purely to force a re-render.
+  const now = useNow();
 
   const decided = Date.parse(decidedAt);
   if (!Number.isFinite(decided)) return "";
+  // `0` is the server snapshot, where "expires in …" has nothing to count from.
+  if (now === 0) return "";
 
-  const left = decided + QUEUE_EXPIRY_MS - Date.now();
+  const left = decided + QUEUE_EXPIRY_MS - now;
   if (left <= 0) return "";
 
   const seconds = Math.floor(left / 1000);

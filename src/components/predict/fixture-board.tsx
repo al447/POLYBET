@@ -36,6 +36,13 @@ export function FixtureBoard({ fixtures }: { fixtures: Fixture[] }) {
   const [sortId, setSortId] = useState<PredictSortId>(DEFAULT_PREDICT_SORT_ID);
   const [mounted, setMounted] = useState(false);
 
+  // The "am I on the client yet" flag the docstring above explains. Disabled
+  // deliberately: `react-hooks/set-state-in-effect` points at
+  // `useSyncExternalStore`, which has nothing to subscribe to here — mounting is
+  // a one-way transition, not a changing external value. The one extra render is
+  // the entire mechanism, and it buys a correct day-grouped tree instead of a
+  // hydration mismatch.
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setMounted(true), []);
 
   const leagues = useMemo(() => leaguesOf(fixtures), [fixtures]);

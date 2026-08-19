@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { useCopyEngineContext } from "@/components/copy-trade/copy-engine-provider";
-import { summariseBudget } from "@/lib/copy-trade/engine";
+import { deployedUsdFor } from "@/lib/copy-trade/engine";
 import type { CopyLedgerEntry } from "@/lib/copy-trade/types";
 import { formatUsdExact } from "@/lib/format";
 import { listPortfolioPositions, summarizePositions } from "@/lib/polymarket/portfolio";
@@ -44,14 +44,28 @@ export function CopyStats({ ledger }: Props) {
   // `useCopyEngine` states ("there is exactly one signer on this page").
   // `null` outside a provider is already the not-connected case below.
   const client = useCopyEngineContext()?.client ?? null;
-  const [market, setMarket] = useState<MarketFigures | null>(null);
+  /**
+   * The fetched figures, **tagged with the token set they describe**.
+   *
+   * Deriving the displayed value from that tag rather than blanking state in an
+   * effect is what makes "different tokens, or no wallet, means no figures" true
+   * without a synchronous setState during an effect: a changed key simply fails
+   * the identity test below and the tiles show dashes until the refetch lands.
+   */
+  const [figures, setFigures] = useState<{ for: string; value: MarketFigures | null }>({
+    for: "",
+    value: null,
+  });
 
   // Cost basis of every copy still open, across all followed traders. Summed
-  // per trader because `summariseBudget` scopes to one address — the same
-  // function the caps use, so there is one definition of "deployed".
+  // per trader because `deployedUsdFor` scopes to one address — the same
+  // arithmetic `summariseBudget` gives the caps, so there is one definition of
+  // "deployed". It takes no clock, which is the point: this figure never
+  // depended on one, and asking for `Date.now()` here was an impurity during
+  // render bought for nothing.
   const addresses = [...new Set(ledger.map((entry) => entry.address))];
   const deployed = addresses.reduce(
-    (total, address) => total + summariseBudget(ledger, address, Date.now()).deployedUsd,
+    (total, address) => total + deployedUsdFor(ledger, address),
     0,
   );
 
@@ -72,37 +86,41 @@ export function CopyStats({ ledger }: Props) {
     [ledger],
   );
 
+  // Empty whenever there is nothing to show — no wallet, or nothing copied yet.
+  const marketKey = client ? copiedTokenKey : "";
+  const market = marketKey !== "" && figures.for === marketKey ? figures.value : null;
+
   useEffect(() => {
-    const copiedTokens = new Set(copiedTokenKey ? copiedTokenKey.split(",") : []);
-    if (!client || copiedTokens.size === 0) {
-      setMarket(null);
-      return;
-    }
+    if (!client || marketKey === "") return;
 
     let cancelled = false;
     void (async () => {
       try {
         const positions = await listPortfolioPositions(client);
+        const copiedTokens = new Set(marketKey.split(","));
         // `tokenId`, not `asset` — see the note in `readOurShares`. The SDK's
         // `Position` and the Data API's raw rows name this field differently.
         const mine = positions.filter((p) => p.tokenId && copiedTokens.has(p.tokenId));
         const summary = summarizePositions(mine);
         if (cancelled) return;
-        setMarket({
-          openValue: summary.positionsValue,
-          unrealisedPnl: summary.unrealizedPnl,
-          realisedPnl: summary.realizedPnl,
+        setFigures({
+          for: marketKey,
+          value: {
+            openValue: summary.positionsValue,
+            unrealisedPnl: summary.unrealizedPnl,
+            realisedPnl: summary.realizedPnl,
+          },
         });
       } catch {
         // A failed read shows dashes rather than stale or invented numbers.
-        if (!cancelled) setMarket(null);
+        if (!cancelled) setFigures({ for: marketKey, value: null });
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [client, copiedTokenKey]);
+  }, [client, marketKey]);
 
   return (
     <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

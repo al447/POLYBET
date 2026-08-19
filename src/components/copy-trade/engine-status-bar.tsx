@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-
 import { COPY_EXECUTION_MODE } from "@/lib/copy-trade/types";
 import type { CopyEngineStatus } from "@/hooks/use-copy-engine";
+import { useNow } from "@/hooks/use-now";
 
 /**
  * The engine's heartbeat: whether it is watching, how many traders, how long
@@ -113,19 +112,17 @@ export function EngineStatusBar({
  * to serve this one caller, so the precision lives here instead.
  */
 function useSecondsSince(iso: string | null): string {
-  const [, tick] = useState(0);
-
-  useEffect(() => {
-    if (!iso) return;
-    const id = setInterval(() => tick((n) => n + 1), 1000);
-    return () => clearInterval(id);
-  }, [iso]);
+  // Subscribed rather than read during render — see `useNow`. The interval it
+  // owns replaces the counter this hook used to tick purely to force a re-render.
+  const now = useNow();
 
   if (!iso) return "";
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return "";
+  // `0` is the server snapshot; there is no elapsed time to report yet.
+  if (now === 0) return "";
 
-  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  const seconds = Math.max(0, Math.floor((now - then) / 1000));
   if (seconds < 60) return `${seconds}s ago`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ago`;
