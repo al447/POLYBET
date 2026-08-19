@@ -2,7 +2,7 @@
 
 Working context for the Polymarket Integration Platform. **Keep this file current** — see [Maintenance Protocol](#maintenance-protocol) at the bottom.
 
-> **Last updated:** 2026-08-17 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
+> **Last updated:** 2026-08-18 · **Phase:** Milestone 1 substantially complete (auth, geo-gate, fee engine, Deposit Wallet + deposit UI, pre-trade authorization, client-side market-order signing all built and verified on local workerd) · Weeks 2–4 (**Market Discovery, Trading Engine & WebSockets, Portfolio/Testing & Launch**) now being executed as **one combined build phase** — see the Milestones section below · **Repo:** on `feat/milestone_2`, 6+ commits
 >
 > **Deploy status — updated 2026-08-09.** First deploy **attempted and rejected 2026-08-05** — the client's Cloudflare account was on **Workers Free** and the upload failed with `exceeded the size limit of 3 MiB [code: 10027]`. **Resolved 2026-08-09: the client upgraded to Workers Paid, and a deploy has now succeeded** on the default `*.workers.dev` subdomain. All six request-time secrets are pushed (`wrangler secret put` — the four `POLYMARKET_BUILDER_*`, `PRIVY_APP_SECRET`, `POLYGON_RPC_URL`), and both build-time vars (`NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_POLYMARKET_BUILDER_CODE`) were exported before this build — so the deployed instance should be running in **live mode** with login and builder attribution both wired, not mock mode. **Not yet done:** the custom domain is not wired (still on `*.workers.dev`, not `POLYBETS.XYZ`), and none of [deployment.md §5](deployment.md#5-post-deploy-verification)'s 9 post-deploy checks (signing spike, health, geoblock, security headers, login end-to-end, etc.) have actually been run or recorded against this deployment — the config being in place is not the same as confirming it works. Run §5 before treating this as verified.
 >
@@ -21,7 +21,7 @@ src/
     restricted/            geoblocked landing
     market/[slug]/         market detail page, keyed by EVENT slug (Step 2.4, built 2026-08-07)
     portfolio/             positions + PnL (Steps 4.1-4.2, built 2026-08-09) — browser-side reads, no server fetch
-    copy-trade/            Copy Trading landing page (built 2026-08-17) — real leaderboard, NO copy engine, see Traps
+    copy-trade/            Copy Trading landing + signed-in dashboard (built 2026-08-17) — engine runs DRY, see Traps
     leaderboard/           full trader board (built 2026-08-17) — server-rendered incl. tabs, no client JS
     api/health             secret presence + builder readiness
     api/geoblock           per-request geo tier (never cached)
@@ -48,10 +48,16 @@ src/
     polymarket/user-events.ts                   authenticated user-channel subscribe + pure fill/order reducer (Step 3.7, built 2026-08-09)
     polymarket/portfolio.ts                     browser-side Data API positions + pure PnL aggregation (Steps 4.1-4.2, built 2026-08-09) — NOT a cached server proxy, see its docstring
     polymarket/withdraw.ts                      Bridge API client + pure validateWithdrawal (FR-4.6, built 2026-08-09) — SDK does NOT wrap this API
+    copy-trade/types.ts                         shapes + COPY_EXECUTION_MODE, the one switch that decides whether copies spend money (built 2026-08-17)
+    copy-trade/engine.ts                        PURE decision core: fill grouping, cursor, caps, exit fractions (built 2026-08-17) — no fetch, no Date.now()
+    copy-trade/execute.ts                       post-approval preflight + balance headroom (built 2026-08-18) — signs NOTHING, see its docstring
+    copy-trade/trader-feed.ts                   browser-side Data API /trades + /positions for a FOLLOWED trader — never authenticated
+    copy-trade/store.ts                         localStorage follows + ledger, sanitisers treat stored JSON as untrusted input
   hooks/
     use-orderbook.ts         live order book, reconnect + full resync on reopen (Step 3.1, built 2026-08-09)
     use-user-channel.ts      live fills/order status on the user's own authenticated client (Step 3.7, built 2026-08-09) — emits a `revision` counter to refetch on, NOT state to render
     use-browser-client.ts    shared connect/auto-reconnect state machine (built 2026-08-09); portfolio uses it, trading-panel + deposit-wallet-panel still on their own copies
+    use-copy-engine.ts       the copy "daemon" — a poll loop in a browser TAB, not a server (built 2026-08-17); mounted once via CopyEngineProvider
   components/
     auth/, wallet/, geo/, layout/{nav-bar,nav-search,right-sidebar,privy-auth-area}, ui/{primitives,icons}
     markets/{market-card,market-grid,discovery-section}   Milestone 2, live — cards link to /market/[slug], don't trade inline
@@ -61,7 +67,8 @@ src/
     layout/{nav-menu,nav-categories}                      two-row masthead: hamburger menu + feed/category tabs (built 2026-08-16); tabs are links, selection lives in the URL
     ui/menu.tsx                                           hand-rolled dropdown (click-outside, Escape, aria) — no Radix, bundle budget
     ui/avatar.tsx                                         TraderAvatar — coloured letter fallback (built 2026-08-17); the fallback is the 94% case, see leaderboard traps
-    copy-trade/{copy-cta,trader-card}.tsx                 copy-trade page pieces (built 2026-08-17); CopyCta is the ONLY thing deciding what a "Copy trader" click does
+    copy-trade/{copy-cta,trader-card,follow-dialog}.tsx   CopyCta is the ONLY thing deciding what a "Copy trader" click does; signed in it opens FollowDialog (caps + sizing)
+    copy-trade/{copy-trade-shell,copy-dashboard,copy-tabs,copy-stats,engine-status-bar}.tsx   signed-in dashboard (built 2026-08-17); CopyEngineProvider mounts the engine EXACTLY once — two instances double every copy
     trade/trading-panel.tsx                               sticky order ticket, market + limit (Step 3.6, built 2026-08-09), Milestone 3 — not yet confirmed against a real mainnet fill
     trade/order-book.tsx                                  live bid/ask depth (Step 3.2, built 2026-08-09), also anchors the trading-panel slippage guard when live; also feeds the limit-price prefill on toggle
     trade/open-orders-panel.tsx                           resting limit orders for the selected outcome + per-order cancel (Step 3.6, built 2026-08-09); no bulk cancel-all yet
@@ -409,7 +416,18 @@ Two consequences to keep straight:
 
 **Historical context — why this was forced.** The architecture signs every order server-side (SEC rule), which means *every user must delegate their wallet*, not just copy-trade users. Delegation is revocable and Privy still splits key custody, so it is not custody in the strict sense — but the server gains the ability to sign without per-action user approval, which is the same property that makes copy trading a legal question. It also sits awkwardly with the homepage copy *"Your wallet, your keys — deposits and positions stay under your own signer."* The alternative is client-side order signing, which avoids delegation entirely but conflicts with SEC-2 (orders rebuilt server-side, never accepted from the client). **Pick deliberately; do not let this get decided by whoever implements the next route.**
 
-**Copy trading breaks the non-custodial guarantee.** Auto-executing on a user's behalf needs server-held delegated signing or session keys. Either one moves the platform from "interface" toward "discretionary trading service." Don't design around this quietly — it's OI-5, a product and legal decision.
+**Copy trading breaks the non-custodial guarantee — *if* it runs on a server.** Auto-executing on a user's behalf needs server-held delegated signing or session keys. Either one moves the platform from "interface" toward "discretionary trading service." Don't design around this quietly — it's OI-5, a product and legal decision. What the built engine does instead is below.
+
+**🚩 The copy engine RUNS but PLACES NOTHING. `COPY_EXECUTION_MODE = "simulated"` in `lib/copy-trade/types.ts` is the switch.** State as of 2026-08-18. Read this before touching anything under `lib/copy-trade/` or `/copy-trade`.
+
+What actually runs: `useCopyEngine` polls each followed trader's `/trades` every 20s **in a browser tab**, groups fills into intents, sizes them against the user's caps, then `resolveQueue` runs the real `/api/orders` preflight and a pUSD balance check and records the outcome. `/api/orders` is pre-trade *authorization*, not placement — so a dry run exercises auth, geo, legal acceptance and fee disclosure without touching the CLOB. **`placeMarketBuy`/`placeMarketSell` are not called from anywhere in this feature.**
+
+Four things to keep straight:
+
+- **The "daemon" is a browser tab, and that is the design.** Copies only happen while the tab is open, and browsers throttle background-tab timers to ~1/min. This is what keeps OI-5 narrowed: no delegation is requested, no key is held server-side, the engine has no more authority than the user sitting at the screen. **A "small" server-side helper that signs, or a cron that polls on the user's behalf, re-opens the custody question this design exists to avoid** — and Workers can't host it regardless (OI-3).
+- **Flipping the constant to `"live"` is not enough to place orders, and never was.** There is no click-to-place path yet: under `"live"` the sweep is skipped and approved copies simply sit in `queued` forever. Building that path is the next step — preflight must re-run *at click time*, since a five-minute-old preflight answer says nothing about now.
+- **`decideCopy` accepts `marketClosed` and nothing passes it**, so `market_closed` never fires. Narrow in practice (we only act on trades newer than the cursor, so the leg was open seconds ago) but real for fast-settling sports legs — see the "event legs settle individually" trap. Close it in the click-to-place step, where the CLOB gives a real answer.
+- **The ledger and follow list live in `localStorage`, per-device.** Cleared site data loses them. `store.ts` treats everything it reads back as untrusted input for that reason — most importantly a corrupt cursor normalises to `null` ("seed me"), never `0`, which would mean *replay this trader's entire history as live orders*.
 
 ---
 
@@ -483,7 +501,7 @@ The client has separately described wanting full Polymarket.com feature parity: 
 | Entire market categories/segments/events | **Covered at no extra cost.** Discovery UI (Step 2.3, implementation.md) browses the whole Gamma catalogue with category, sort and range filters. ⚠️ Correction 2026-08-15: the category chips come from the curated `TOP_CATEGORIES` constant in `gamma-types.ts`, **not** a live tags fetch — an earlier version of this line claimed otherwise. `listTags` exists but is deliberately unwired; see the comment at the foot of `gamma.ts` (unfiltered `/tags` was garbage, `isCarousel:true` too sparse). |
 | Users' deposits | **Done.** Client-provisioned Deposit Wallet, QR + address + balance-polling flow (`deposit-wallet-panel.tsx`). |
 | Signup/signin | **Done, kept as-is per client direction 2026-08-07.** Privy embedded wallet, email-only login. No standalone `/login` page — auth is embedded in the nav bar / home page. |
-| Copy trade feature | **Landing page built 2026-08-17; the engine is still out of scope.** `/copy-trade` is a real page over the real Polymarket leaderboard, and `/leaderboard` is a complete feature. **No copy engine exists behind either.** OI-5 is unchanged: auto-executing on a user's behalf requires server-held delegated signing or session keys, which conflicts with the non-custodial architecture (§6.1, srs.md) and needs a product + legal decision before any code — and Workers can't host the daemon regardless (OI-3). Every "Copy trader" button routes through `CopyCta`, which opens login when signed out and says the engine isn't live when signed in. **Do not wire an order path into it without resolving OI-5 first.** FR-8 in srs.md. |
+| Copy trade feature | **Engine built and running DRY as of 2026-08-18; no order has ever been placed.** See the copy-trading trap below for exactly what runs and what does not. `/leaderboard` is a complete feature. OI-5 is **narrowed, not resolved** — the engine is a poll loop in the user's own browser tab with no delegation and no server-held key, which is why it could be built at all; hands-off auto-signing is still the open product + legal question. FR-8 in srs.md. |
 | Sports betting AI | **Not in scope — Phase 2, unfunded, unspecified.** FR-7 in srs.md has no chosen model/provider/data source/cost — "not estimable as written." |
 | Domain `POLYBETS.XYZ` → Cloudflare | **Supplied, unverified.** Client states it's pointed at Cloudflare; DNS zone/nameserver delegation not yet checked from this environment (P-8, deployment.md). |
 | Up to 4 revisions | **Commercial term, recorded** in srs.md §8 — no code impact. |

@@ -8,6 +8,7 @@ import { CopyTabs } from "@/components/copy-trade/copy-tabs";
 import { EngineStatusBar } from "@/components/copy-trade/engine-status-bar";
 import { useCopyEngineContext } from "@/components/copy-trade/copy-engine-provider";
 import { TraderAvatar } from "@/components/ui/avatar";
+import { COPY_EXECUTION_MODE } from "@/lib/copy-trade/types";
 import { formatUsdExact } from "@/lib/format";
 
 /**
@@ -111,8 +112,11 @@ export function CopyDashboard({ traders }: { traders: ReactNode }) {
       <CopyTabs ledger={engine.ledger} />
 
       <p className="mt-12 max-w-2xl text-xs leading-relaxed text-zinc-500">
-        Copy trading places real orders with real money. Past performance is not a promise of future
-        results, and copies can fill at different prices than the trader you follow.
+        {COPY_EXECUTION_MODE === "simulated"
+          ? "This is a dry run: copies are worked out against live traders and recorded here, but no order is placed and no money moves. The prices shown are what a copy would have been sized at, not what it filled at."
+          : "Copy trading places real orders with real money."}{" "}
+        Past performance is not a promise of future results, and copies can fill at different prices
+        than the trader you follow.
       </p>
     </div>
   );

@@ -102,6 +102,28 @@ export type GammaMarket = {
   /** Where resolution is verified from, e.g. `https://www.dotabuff.com`. */
   resolutionSource?: string;
   /**
+   * Which *kind* of sports bet this market is, on the events Polymarket
+   * generates per fixture. Verified live 2026-08-19 across 1200 soccer events:
+   * `"moneyline"` (the match result — home/draw/away), `"soccer_halftime_result"`,
+   * `"soccer_exact_score"`, `"totals"`, `"total_corners"`, `"soccer_first_to_score"`, ...
+   *
+   * 🚩 `"moneyline"` is the only reliable way to find the *base* match event.
+   * A fixture spawns seven Gamma events — the match plus `- Halftime Result`,
+   * `- Exact Score`, `- Total Corners`, `- More Markets`, and so on — all
+   * carrying the same tags and the same `endDate`. Splitting on `" - "` in the
+   * title looks equivalent and is not: club names contain dashes.
+   *
+   * Absent on non-sports markets.
+   */
+  sportsMarketType?: string;
+  /**
+   * Whether the CLOB is taking orders right now. Distinct from `closed` — a
+   * settled leg of a live event is `closed: true`, but a market can also stop
+   * accepting orders while still open (see the "event legs settle individually"
+   * note on `rankEventOutcomes`).
+   */
+  acceptingOrders?: boolean;
+  /**
    * JSON-encoded string array like `'["proposed"]'` — same Gamma encoding
    * quirk as `outcomes`, so read it with `parseGammaJsonArray`. Non-empty
    * means UMA has been asked to resolve and the price is no longer a live

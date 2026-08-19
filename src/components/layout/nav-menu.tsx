@@ -32,7 +32,9 @@ import { LEGAL_DOCUMENTS } from "@/lib/legal/documents";
  * `/copy-trade` is a landing page over live leaderboard data with no copy
  * engine behind it — the buttons there are honest about that (see `CopyCta`).
  * The row is a link because the page exists, not because the feature ships.
- * Predict AI stays inert: unfunded and unspecified, with no page at all.
+ * Predict AI joined them on 2026-08-19 on exactly the same terms: `/predict-ai`
+ * is a real fixture board over live Gamma data, but the model it is named for
+ * does not exist and the page is explicit about that on every row.
  *
  * No "Dark mode" row, unlike the reference design: this app is dark-only by
  * decision (see the comment in `globals.css`), so a toggle would either lie or
@@ -56,7 +58,9 @@ export function NavMenu({ authRow }: { authRow?: ReactNode }) {
       <MenuItem href="/copy-trade" icon={<UsersIcon className="size-4" />}>
         Copy Trading
       </MenuItem>
-      <MenuItemInert icon={<SparkleIcon className="size-4" />}>Predict AI</MenuItemInert>
+      <MenuItem href="/predict-ai" icon={<SparkleIcon className="size-4" />}>
+        Predict AI
+      </MenuItem>
       <MenuItemInert icon={<BookmarkIcon className="size-4" />}>Watchlist</MenuItemInert>
       <MenuItemInert icon={<GiftIcon className="size-4" />}>Rewards</MenuItemInert>
 

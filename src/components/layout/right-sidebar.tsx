@@ -41,6 +41,7 @@ export function RightSidebar() {
         title="Predict AI"
         description="Predict Sports using Predict AI."
         cta="Predict Sports"
+        href="/predict-ai"
       />
 
       <AccountPanel />
@@ -117,8 +118,12 @@ function TrendingTopicsCard() {
  * page is a landing page over live leaderboard data — the copy *engine* is
  * still blocked on the custody question (OI-5), since auto-executing on a
  * user's behalf needs server-held delegated signing and this platform is
- * non-custodial by design. Predict AI has no page at all and keeps the
- * disabled button.
+ * non-custodial by design.
+ *
+ * Predict AI gained one on 2026-08-19 when `/predict-ai` landed, on the same
+ * terms: the page is a real fixture board over live Gamma data, but the *model*
+ * it is named for does not exist yet and the page says so on every row. The
+ * button is enabled because the page exists, not because the feature ships.
  *
  * They sit above `AccountPanel` to match the reference's ordering. Worth
  * revisiting if it turns out to push the deposit flow too far down for

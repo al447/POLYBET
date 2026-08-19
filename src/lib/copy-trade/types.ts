@@ -68,6 +68,23 @@ export const SETTLE_DELAY_SECONDS = 5;
 export const FULL_EXIT_THRESHOLD = 0.98;
 
 /**
+ * How long a `queued` copy stays actionable before it is abandoned.
+ *
+ * 🚩 A copy is a decision about a price that existed at `decidedAt`. Resolving
+ * one that has been sitting since yesterday would record a "position" opened at
+ * a price nobody could get today, and the four headline tiles are computed from
+ * exactly those rows. The tab-closed case makes this ordinary rather than
+ * exotic: the engine only runs while the tab is open, so a reopened tab always
+ * finds whatever the last session left mid-flight.
+ *
+ * Expiring is the honest answer — the copy did not happen, and pretending
+ * otherwise corrupts the dry run's numbers, which is the one thing the dry run
+ * is for. Ten minutes is well past the poll interval and well short of a price
+ * moving out from under the decision.
+ */
+export const QUEUE_EXPIRY_MS = 10 * 60 * 1000;
+
+/**
  * One trade by a followed trader, normalised from `data-api.polymarket.com/v1`
  * `/trades?user=<addr>`.
  *
@@ -296,10 +313,14 @@ export type CopyLedgerEntry = {
 };
 
 /**
- * `queued` — waiting for the user's one click.
+ * `queued` — approved by the engine, not yet acted on. A transient state in a
+ *   dry run, where the resolution sweep clears it within a second; the state a
+ *   copy *waits* in under `"live"`, where it needs the user's click.
  * `simulated` — the dry run's stand-in for `placed`; never touched money.
  * `placed` — really signed and sent to the CLOB.
- * `cancelled` — the user dismissed it from the queue.
+ * `cancelled` — dismissed by the user, or expired before it could be acted on
+ *   (see {@link QUEUE_EXPIRY_MS}). Both mean the same thing to every reader of
+ *   the ledger: it never became an order and never will.
  */
 export type CopyEntryStatus =
   | "queued"

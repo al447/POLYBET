@@ -4,6 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { decideCopy, selectCopyableIntents, summariseBudget } from "@/lib/copy-trade/engine";
 import {
+  hasExpired,
+  planResolution,
+  readAvailableUsd,
+  requiredUsd,
+  runPreflight,
+} from "@/lib/copy-trade/execute";
+import {
   appendLedger,
   readFollows,
   readLedger,
@@ -12,6 +19,7 @@ import {
 } from "@/lib/copy-trade/store";
 import { fetchTraderPositionSizes, fetchTraderTrades } from "@/lib/copy-trade/trader-feed";
 import {
+  COPY_EXECUTION_MODE,
   type CopyDecision,
   type CopyIntent,
   type CopyLedgerEntry,
@@ -110,6 +118,53 @@ export function useCopyEngine(): CopyEngine {
     followsRef.current = next;
     setFollows(next);
     writeFollows(next);
+  }, []);
+
+  /**
+   * Clears the queue: every `queued` row is preflighted, balance-checked and
+   * resolved.
+   *
+   * 🚩 **Dry run only.** Under `"live"`, `queued` means "waiting for the user's
+   * click" and this must not touch it — the click-to-place path runs its own
+   * preflight at the moment of the click, because a preflight answer from five
+   * minutes ago says nothing about whether the order is placeable now.
+   *
+   * Sweeping the whole queue rather than only this pass's additions is what
+   * recovers rows stranded by a closed tab: the engine stops when the tab does,
+   * so a reopened tab always finds whatever the last session left mid-flight.
+   * Those rows are almost always expired by then, which `planResolution`
+   * cancels rather than acting on.
+   *
+   * Persisting per row, rather than once at the end, is deliberate for the same
+   * reason — a sweep interrupted halfway keeps what it already decided.
+   */
+  const resolveQueue = useCallback(async () => {
+    const queued = ledgerRef.current.filter((entry) => entry.status === "queued");
+    if (queued.length === 0) return;
+
+    // Read once per sweep, then decremented locally as buys are approved.
+    // Re-reading per row would return the same figure every time — nothing has
+    // settled on chain — so ten copies would each pass the same check and
+    // overdraw together, exactly the bug `summariseBudget` avoids for caps.
+    let available = await readAvailableUsd(clientRef.current);
+
+    let next = ledgerRef.current;
+    for (const entry of queued) {
+      // Fresh per row: a preflight round trip takes real time, and the expiry
+      // check has to be against the clock now, not when the sweep started.
+      const nowMs = Date.now();
+      const preflight = hasExpired(entry, nowMs) ? null : await runPreflight(entry);
+      const patch = planResolution({ entry, preflight, availableUsd: available, nowMs });
+
+      if (patch.status === "simulated" && entry.side === "BUY" && available !== null) {
+        available -= requiredUsd(entry.amountUsd ?? 0, patch.feeBps ?? 0);
+      }
+
+      next = updateLedgerEntry(next, entry.id, patch);
+    }
+
+    ledgerRef.current = next;
+    setLedger(next);
   }, []);
 
   // localStorage is read in an effect, never during render: reading it while
@@ -223,12 +278,17 @@ export function useCopyEngine(): CopyEngine {
         setLedger(next);
       }
 
+      // Inside the same `runningRef` guard as the poll above, so a slow sweep
+      // cannot have the next tick's poll start behind it and re-evaluate an
+      // intent against a ledger this sweep has not finished writing.
+      if (COPY_EXECUTION_MODE === "simulated") await resolveQueue();
+
       setLastCheckedAt(new Date(nowMs).toISOString());
     } finally {
       runningRef.current = false;
       setChecking(false);
     }
-  }, [commitFollows]);
+  }, [commitFollows, resolveQueue]);
 
   // Held in a ref so the interval below is created once and never restarted by
   // a change of identity, which would reset its phase on every render. Declared
@@ -348,10 +408,16 @@ async function readOurShares(client: BrowserClient | null): Promise<Map<string, 
   if (!client) return shares;
 
   try {
+    // 🚩 `tokenId`, not `asset`. Two different position shapes are in play:
+    // the Data API's raw JSON rows (`trader-feed.ts`, where the field really is
+    // `asset`) and the SDK's typed `Position` returned here, where it is
+    // `tokenId`. Reading `asset` off this one is silently `undefined`, so every
+    // holding was skipped, the map came back empty, and `decideCopy` read that
+    // as "nothing to exit" — exits were never sized.
     for (const position of await listPortfolioPositions(client)) {
-      if (!position.asset) continue;
+      if (!position.tokenId) continue;
       const size = Number(position.size);
-      if (Number.isFinite(size) && size > 0) shares.set(position.asset, size);
+      if (Number.isFinite(size) && size > 0) shares.set(position.tokenId, size);
     }
   } catch {
     // A failed read must not stop the pass. It reads as "no position", which
@@ -364,10 +430,14 @@ async function readOurShares(client: BrowserClient | null): Promise<Map<string, 
 /**
  * Turns a decision into the row the tabs render.
  *
- * A copy the engine approved becomes **`queued`**, never `placed`: this build
- * confirms every copy with one click, so nothing is signed without the user
- * acting. `queued` still counts against the caps (see `summariseBudget`), so a
- * backed-up queue cannot authorise past a limit.
+ * A copy the engine approved always lands as **`queued`** first, never straight
+ * to a terminal status. `resolveQueue` is what moves it on — to `simulated` in
+ * a dry run, or, under `"live"`, not at all until the user clicks.
+ *
+ * Writing the row before resolving it, rather than after, buys three things:
+ * the user sees the decision immediately, a tab closed mid-resolution leaves a
+ * record instead of a hole, and `queued` already counts against the caps (see
+ * `summariseBudget`) so the budget is reserved for the whole round trip.
  */
 function buildEntry(
   intent: CopyIntent,
