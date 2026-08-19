@@ -200,6 +200,7 @@ export function sanitiseLedger(payload: unknown): CopyLedgerEntry[] {
       shares: optionalFinite(row.shares),
       expectedPrice: optionalFinite(row.expectedPrice),
       feeBps: optionalFinite(row.feeBps),
+      orderId: str(row.orderId) || undefined,
       error: str(row.error) || undefined,
     });
   }

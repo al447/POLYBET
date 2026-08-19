@@ -6,6 +6,7 @@ import { usePrivy, useWallets } from "@privy-io/react-auth";
 import { isAuthConfigured, isTradingConfigured } from "@/lib/auth/public-config";
 import { hasDeployedWalletCached, markWalletDeployedCached, readCollateralBalance } from "@/lib/polymarket/browser-client";
 import type { BrowserClient } from "@/lib/polymarket/browser-client";
+import { describeConnectError } from "@/lib/polymarket/clob-credentials";
 import { Card, Row, StatusDot, shortenAddress } from "@/components/ui/primitives";
 
 /**
@@ -94,10 +95,7 @@ function ConnectedWalletPanel() {
 
       setPhase({ state: "ready", wallet: walletStateFrom(client, await readCollateralBalance(client)) });
     } catch (error) {
-      setPhase({
-        state: "error",
-        reason: error instanceof Error ? error.message : "wallet_setup_failed",
-      });
+      setPhase({ state: "error", reason: describeConnectError(error) });
     }
   }, [wallets]);
 

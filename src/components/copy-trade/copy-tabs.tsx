@@ -173,6 +173,13 @@ function EntryRow({ entry }: { entry: CopyLedgerEntry }) {
           {entry.feeBps !== undefined ? (
             <p className="text-xs text-zinc-600">fee {entry.feeBps} bps</p>
           ) : null}
+          {/* The one field that proves a real order exists on Polymarket's
+              side, rather than only in our own record of a decision. */}
+          {entry.orderId ? (
+            <p className="font-mono text-[11px] text-zinc-600" title={entry.orderId}>
+              order {entry.orderId.slice(0, 10)}…
+            </p>
+          ) : null}
         </div>
       </div>
 

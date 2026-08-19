@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { useBrowserClient } from "@/hooks/use-browser-client";
+import { useCopyEngineContext } from "@/components/copy-trade/copy-engine-provider";
 import { summariseBudget } from "@/lib/copy-trade/engine";
 import type { CopyLedgerEntry } from "@/lib/copy-trade/types";
 import { formatUsdExact } from "@/lib/format";
@@ -38,7 +38,12 @@ type MarketFigures = {
 };
 
 export function CopyStats({ ledger }: Props) {
-  const { client } = useBrowserClient();
+  // 🚩 The engine's client, not a second `useBrowserClient()`. That hook holds
+  // its own state, so calling it here built a *different* client on this page —
+  // a second authentication, and a direct contradiction of the invariant
+  // `useCopyEngine` states ("there is exactly one signer on this page").
+  // `null` outside a provider is already the not-connected case below.
+  const client = useCopyEngineContext()?.client ?? null;
   const [market, setMarket] = useState<MarketFigures | null>(null);
 
   // Cost basis of every copy still open, across all followed traders. Summed

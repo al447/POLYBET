@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import { hasExpired, planResolution, requiredUsd } from "./execute";
+import { checkCopyPreconditions, hasExpired, planResolution, priceGuard, requiredUsd } from "./execute";
 import { QUEUE_EXPIRY_MS, type CopyLedgerEntry } from "./types";
 
 /**
- * `planResolution` is the only part of the dry run that decides anything, so it
- * is the only part worth testing here — `runPreflight` and `readAvailableUsd`
- * are one-line wrappers over helpers already covered elsewhere.
+ * The pure decisions: what stops a copy (`checkCopyPreconditions`, shared by
+ * the dry run and the live click) and what price band it carries (`priceGuard`).
+ *
+ * `placeCopy` itself is not tested here — it is sequencing around these two
+ * plus `placeMarketBuy`, and a test of it would be a test of mocks. Everything
+ * in it that *decides* anything lives in the two functions below.
  */
 
 const NOW = Date.parse("2026-08-18T12:00:00.000Z");
@@ -179,5 +182,105 @@ describe("planResolution", () => {
     });
 
     expect(patch.status).toBe("failed");
+  });
+});
+
+describe("checkCopyPreconditions — the live-only branches", () => {
+  it("skips a settled market before it spends the preflight's answer", () => {
+    // Event legs settle individually, long before the event closes. Copying
+    // into one is not a rejection to explain away — it is a market that no
+    // longer exists.
+    const check = checkCopyPreconditions({
+      entry: buyEntry(),
+      preflight: ALLOWED,
+      availableUsd: 100,
+      marketOpen: false,
+      nowMs: NOW,
+    });
+
+    expect(check.blocked).toBe(true);
+    expect(check.blocked && check.patch.skipReason).toBe("market_closed");
+  });
+
+  it("does not block when the market state could not be read", () => {
+    // A lookup blip is not evidence of a settled market, and the CLOB rejects
+    // the order upstream if we are wrong.
+    for (const marketOpen of [null, undefined, true] as const) {
+      const check = checkCopyPreconditions({
+        entry: buyEntry(),
+        preflight: ALLOWED,
+        availableUsd: 100,
+        marketOpen,
+        nowMs: NOW,
+      });
+      expect(check.blocked).toBe(false);
+    }
+  });
+
+  it("expires before it consults the market, so a stale row costs no requests", () => {
+    const check = checkCopyPreconditions({
+      entry: buyEntry({ decidedAt: new Date(NOW - QUEUE_EXPIRY_MS - 1).toISOString() }),
+      preflight: ALLOWED,
+      availableUsd: 100,
+      marketOpen: false,
+      nowMs: NOW,
+    });
+
+    expect(check.blocked && check.patch.status).toBe("cancelled");
+  });
+
+  it("fails a sell with no readable share count", () => {
+    // `placeMarketSell` takes shares. A row without them has nothing to send,
+    // and `String(undefined)` would post the literal "undefined".
+    const check = checkCopyPreconditions({
+      entry: buyEntry({ side: "SELL", amountUsd: undefined, shares: undefined }),
+      preflight: ALLOWED,
+      availableUsd: 100,
+      nowMs: NOW,
+    });
+
+    expect(check.blocked && check.patch.status).toBe("failed");
+  });
+
+  it("hands the disclosed fee back when nothing blocks", () => {
+    const check = checkCopyPreconditions({
+      entry: buyEntry(),
+      preflight: ALLOWED,
+      availableUsd: 100,
+      marketOpen: true,
+      nowMs: NOW,
+    });
+
+    expect(check).toEqual({ blocked: false, feeBps: 50 });
+  });
+});
+
+describe("priceGuard", () => {
+  it("caps a buy 5% above the price they filled at", () => {
+    // They bought at 0.32; we will not pay more than 0.336 to follow them.
+    expect(priceGuard(buyEntry())).toEqual({ maxPrice: "0.336" });
+  });
+
+  it("floors a sell 5% below the price they filled at", () => {
+    expect(priceGuard(buyEntry({ side: "SELL", expectedPrice: 0.32 }))).toEqual({
+      minPrice: "0.304",
+    });
+  });
+
+  it("stays inside the CLOB's valid price range", () => {
+    // 0.98 + 5% is 1.029, which is not a price that exists.
+    expect(priceGuard(buyEntry({ expectedPrice: 0.98 }))).toEqual({ maxPrice: "0.999" });
+    // 0.001 less 5% rounds below the minimum tick, so it clamps back up to it.
+    expect(priceGuard(buyEntry({ side: "SELL", expectedPrice: 0.001 }))).toEqual({
+      minPrice: "0.001",
+    });
+  });
+
+  it("sends no guard at all when the anchor price is unusable", () => {
+    // A garbage anchor would set the bound somewhere arbitrary and every copy
+    // of that market would silently fail to fill. Unguarded is the lesser evil.
+    for (const expectedPrice of [undefined, 0, 1, Number.NaN]) {
+      expect(priceGuard(buyEntry({ expectedPrice }))).toEqual({});
+    }
   });
 });

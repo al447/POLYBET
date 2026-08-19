@@ -8,6 +8,12 @@ import { createWalletClient, custom, type EIP1193Provider } from "viem";
 import { polygon } from "viem/chains";
 
 import { BUILDER_CODE } from "@/lib/auth/public-config";
+import {
+  isTimeoutError,
+  readCachedCredentials,
+  writeCachedCredentials,
+  type ClobCredentials,
+} from "./clob-credentials";
 
 /**
  * Browser-side Polymarket client (SEC-1, SEC-2 revision).
@@ -68,6 +74,28 @@ export function markWalletDeployedCached(eoaAddress: string): void {
 }
 
 /**
+ * Connects to a wallet that is already being connected, so two callers share
+ * one login instead of racing.
+ *
+ * 🚩 Two things make this necessary rather than tidy. React StrictMode (on by
+ * default for the App Router in dev) invokes effects twice, and the auto-connect
+ * guards in `useBrowserClient` / `DepositWalletPanel` read a **stale closure**
+ * of their own status — so the second invocation sees `"idle"` and connects
+ * again. Separately, `useBrowserClient` is a plain hook, so every component
+ * calling it builds its own client (`/copy-trade` has two, `/market/[slug]` has
+ * two). Either way the result is concurrent, identical `POST /auth/api-key`
+ * calls for the same address at nonce 0 — a write endpoint asked to create the
+ * same record twice at once, which is exactly the shape that stalls past the
+ * 10s ceiling described in `clob-credentials.ts`.
+ *
+ * Sharing the promise also hands both callers the *same* `SecureClient`, which
+ * is what `useCopyEngine` already claims ("there is exactly one signer on this
+ * page"). Safe because nothing calls `closeSubscriptions()` or
+ * `endAuthentication()` — the only methods where one holder could break another.
+ */
+const connectionsInFlight = new Map<string, Promise<BrowserClient>>();
+
+/**
  * Builds an authenticated client from a Privy embedded wallet.
  *
  * @param provider EIP-1193 provider from Privy's `wallet.getEthereumProvider()`.
@@ -77,8 +105,51 @@ export function markWalletDeployedCached(eoaAddress: string): void {
  * one through the Relayer. **Deployment spends one of 100 daily relay
  * transactions**, so callers must not construct this on render — only in
  * response to an explicit user action.
+ *
+ * Not `async` on purpose: the in-flight map has to be read and written
+ * synchronously, or StrictMode's second call arrives before the first has
+ * registered itself and both connect anyway.
  */
-export async function createBrowserClient(
+export function createBrowserClient(
+  provider: EIP1193Provider,
+  address: string,
+): Promise<BrowserClient> {
+  const key = address.toLowerCase();
+  const existing = connectionsInFlight.get(key);
+  if (existing) return existing;
+
+  const pending = connectWithRetry(provider, address).finally(() => {
+    connectionsInFlight.delete(key);
+  });
+  connectionsInFlight.set(key, pending);
+  return pending;
+}
+
+/**
+ * One retry, and only for a timeout.
+ *
+ * The 10s ceiling is enforced **client-side** by ky, so a timed-out
+ * `POST /auth/api-key` very likely still reached Polymarket and created the
+ * credential. That makes the second attempt cheap rather than a repeat of the
+ * first: the SDK's own fallback is `POST /auth/api-key` → 400 (already exists)
+ * → `GET /auth/derive-api-key`, and ky retries GETs on its own.
+ *
+ * Exactly one retry. Each attempt can re-prompt the user's wallet to sign, so a
+ * loop would be worse than the error it is trying to paper over.
+ */
+async function connectWithRetry(
+  provider: EIP1193Provider,
+  address: string,
+): Promise<BrowserClient> {
+  try {
+    return await connectOnce(provider, address);
+  } catch (error) {
+    if (!isTimeoutError(error)) throw error;
+    return connectOnce(provider, address);
+  }
+}
+
+async function connectOnce(
   provider: EIP1193Provider,
   address: string,
 ): Promise<BrowserClient> {
@@ -92,7 +163,15 @@ export async function createBrowserClient(
     transport: custom(provider),
   });
 
-  return createSecureClient({
+  // Reusing credentials skips both the EIP-712 signature and
+  // `POST /auth/api-key` — see `clob-credentials.ts` for why that POST is the
+  // fragile one. Stale or revoked credentials are not a problem to guard
+  // against here: the SDK validates them with `GET /auth/api-keys` and, on a
+  // 401, falls back to a fresh signature by itself.
+  const cached = readCachedCredentials(address);
+  const reuse = cached ? { credentials: await brandCredentials(cached) } : {};
+
+  const client = await createSecureClient({
     signer: signerFrom(walletClient),
     // Root-relative: same origin, so the session cookie authenticates us and
     // the builder secret is never shipped to the browser.
@@ -100,7 +179,24 @@ export async function createBrowserClient(
       url: "/api/builder/sign",
       credentials: "same-origin",
     }),
+    ...reuse,
   });
+
+  writeCachedCredentials(address, client.credentials);
+  return client;
+}
+
+/**
+ * Re-applies the SDK's `ApiKey` brand to a key that has been through JSON.
+ *
+ * `toApiKey` is the identity function at runtime — the brand is a phantom type.
+ * It is used anyway rather than a cast, because a cast here would be indistinguishable
+ * from a cast that papers over a genuinely wrong shape, and this file already
+ * carries one documented instance of that trade-off (`transferCollateral`).
+ */
+async function brandCredentials(cached: ClobCredentials) {
+  const { toApiKey } = await import("@polymarket/bindings");
+  return { ...cached, key: toApiKey(cached.key) };
 }
 
 /** pUSD balance in base units (6 decimals). Shared by the deposit panel and the trade ticket. */
@@ -204,6 +300,45 @@ export async function placeMarketSell(
     builderCode: builderCode(),
     ...(params.minPrice ? { minPrice: params.minPrice } : {}),
   });
+}
+
+/**
+ * Whether this market will take an order right now — `null` when it could not
+ * be read.
+ *
+ * 🚩 Two flags, and both are needed. `closed` separates a settled leg from a
+ * live one (`active` stays `true` on settled legs, so it is useless here), and
+ * `acceptingOrders` catches a market that has stopped taking orders while the
+ * event is still open. A single event's legs settle individually, long before
+ * the event closes — measured 17 of 22 legs settled on one open event — so
+ * "the event is live" is not an answer to "can I trade this leg".
+ *
+ * ⚠️ Both live under `market.state`, not on the market itself. The SDK
+ * restructures Gamma's flat JSON into `{state, outcomes, metrics, trading, …}`,
+ * so the field names from `gamma-types.ts` do not transfer — reading
+ * `market.closed` here is `undefined`, which reads as "open" and silently
+ * disables the check.
+ *
+ * Only an explicit `false` blocks. Gamma leaves both fields optional, and a
+ * missing flag is not evidence of a closed market; the CLOB rejects the order
+ * upstream if we get it wrong, which is a worse message but not a worse
+ * outcome. `null` on failure for the same reason — a lookup blip must not read
+ * as "settled".
+ */
+export async function isMarketAcceptingOrders(
+  client: BrowserClient,
+  slug: string,
+): Promise<boolean | null> {
+  if (!slug) return null;
+  try {
+    const { fetchMarket } = await import("@polymarket/client/actions");
+    const { state } = await fetchMarket(client, { slug });
+    if (state.closed === true) return false;
+    if (state.acceptingOrders === false) return false;
+    return true;
+  } catch {
+    return null;
+  }
 }
 
 export type LimitOrderParams = {

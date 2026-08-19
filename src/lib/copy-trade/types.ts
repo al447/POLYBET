@@ -15,21 +15,46 @@
  */
 
 /**
- * 🚩 The one switch that decides whether copies spend real money.
+ * 🚩 The one switch that decides whether copies spend real money. **Currently
+ * `"live"`** — set 2026-08-19.
+ *
+ * `"live"` does not mean hands-off. Every approved copy stops at `queued` and
+ * waits for the user to click **Place**, which is what keeps this on the right
+ * side of OI-5: the engine has no more authority than the person at the screen,
+ * and nothing is signed without a human action. See `placeCopy` in `execute.ts`
+ * for what that click actually does.
  *
  * `"simulated"` runs the entire pipeline — poll, group, size, cap, preflight —
  * and records what it *would* have done, without ever calling `placeMarketBuy`.
  * That is the only way to exercise this against live traders without risk:
  * there is no testnet for the production CLOB, so the alternative to a dry run
- * is debugging with real pUSD.
+ * is debugging with real pUSD. Switch back to it to test engine changes.
  *
- * A code constant, not a UI toggle, on purpose. A switch that turns on
- * real spending is not something a user should be able to hit by accident.
- * Flip it only after reviewing a dry run's Copy activity.
+ * A code constant, not a UI toggle, on purpose. A switch that turns on real
+ * spending is not something a user should be able to hit by accident.
  */
-export const COPY_EXECUTION_MODE: CopyExecutionMode = "simulated";
+export const COPY_EXECUTION_MODE: CopyExecutionMode = "live";
 
 export type CopyExecutionMode = "simulated" | "live";
+
+/**
+ * How far the price may move against the copy before it is not worth placing.
+ *
+ * 🚩 A copy is a decision about the price **they** got. By the time the user
+ * clicks Place, the source trade is at least a poll interval old and the book
+ * has had time to move — often *because* of the trade being copied. Filling at
+ * any price would turn "copy their 0.32 entry" into "buy at 0.61 because they
+ * bought", which is the opposite of copying them.
+ *
+ * So every copy carries a `maxPrice` (buy) or `minPrice` (sell) anchored on
+ * their fill. Outside the band the order does not fill and the row lands as
+ * `failed` with the reason visible — a missed copy the user can see, rather
+ * than a silent bad fill they discover in their positions.
+ *
+ * Same 5% band `TradingPanel` uses, for the same reason; the difference is only
+ * what it is anchored on (their fill price, not our order book).
+ */
+export const COPY_MAX_SLIPPAGE = 0.05;
 
 /**
  * Our own floor on a copy's notional.
@@ -308,6 +333,14 @@ export type CopyLedgerEntry = {
   expectedPrice?: number;
   /** Disclosed taker fee in bps from `preflightOrder`. */
   feeBps?: number;
+  /**
+   * The CLOB's own order id, set only on `placed`.
+   *
+   * The one field in this row that proves a real order exists — everything else
+   * is our own record of a decision. Its presence is what separates a copy that
+   * reached Polymarket from one that merely looks like it did.
+   */
+  orderId?: string;
   /** Free text on a failure, straight from the SDK or the preflight message. */
   error?: string;
 };

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { decideCopy, selectCopyableIntents, summariseBudget } from "@/lib/copy-trade/engine";
 import {
   hasExpired,
+  placeCopy,
   planResolution,
   readAvailableUsd,
   requiredUsd,
@@ -30,7 +31,7 @@ import {
 import type { BrowserClient } from "@/lib/polymarket/browser-client";
 import { listPortfolioPositions } from "@/lib/polymarket/portfolio";
 
-import { useBrowserClient } from "./use-browser-client";
+import { useBrowserClient, type BrowserClientStatus } from "./use-browser-client";
 
 /**
  * The copy engine's loop: poll the traders the user follows, decide what each
@@ -80,6 +81,19 @@ export type CopyEngine = {
   checking: boolean;
   /** False until localStorage has been read — nothing renders from it before. */
   hydrated: boolean;
+  /**
+   * The wallet that will sign copies, and its state.
+   *
+   * 🚩 Exposed rather than let the queue UI call `useBrowserClient` itself. A
+   * second instance would be a *different* client: the user would connect one
+   * and place with the other, and "Connect wallet" would appear to do nothing.
+   * There is exactly one signer on this page, and this is it.
+   */
+  client: BrowserClient | null;
+  walletStatus: BrowserClientStatus;
+  connectWallet: () => Promise<void>;
+  /** Ids currently being placed — the button that started them is disabled until they land. */
+  placing: string[];
   checkNow: () => void;
   pauseAll: () => void;
   resumeAll: () => void;
@@ -89,16 +103,19 @@ export type CopyEngine = {
   ) => void;
   unfollowTrader: (address: string) => void;
   dismissQueued: (id: string) => void;
+  /** Signs and sends one queued copy. The only path in this feature that spends money. */
+  placeQueued: (id: string) => Promise<void>;
 };
 
 export function useCopyEngine(): CopyEngine {
-  const { client, status: clientStatus } = useBrowserClient();
+  const { client, status: clientStatus, connect: connectWallet } = useBrowserClient();
 
   const [follows, setFollows] = useState<FollowedTrader[]>([]);
   const [ledger, setLedger] = useState<CopyLedgerEntry[]>([]);
   const [lastCheckedAt, setLastCheckedAt] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [placing, setPlacing] = useState<string[]>([]);
 
   // Refs shadow the state so the polling loop reads current values without
   // being torn down and rebuilt every time either one changes.
@@ -106,6 +123,10 @@ export function useCopyEngine(): CopyEngine {
   const ledgerRef = useRef<CopyLedgerEntry[]>([]);
   const runningRef = useRef(false);
   const clientRef = useRef<BrowserClient | null>(null);
+  // 🚩 The double-click guard, and it must be a ref. State updates are batched,
+  // so two clicks in the same tick would both read `placing` as empty and both
+  // sign — one intent, two orders, twice the exposure the user agreed to.
+  const placingRef = useRef<Set<string>>(new Set());
 
   // Written in an effect, not during render: a ref mutated while rendering is
   // read by whichever pass happens to be in flight, which is exactly the kind
@@ -165,6 +186,68 @@ export function useCopyEngine(): CopyEngine {
 
     ledgerRef.current = next;
     setLedger(next);
+  }, []);
+
+  /**
+   * Cancels queued copies that have aged out. The live path's counterpart to
+   * `resolveQueue`, which does not run under `"live"`.
+   *
+   * 🚩 Without this a queue row would wait forever, and the Place button on a
+   * three-hour-old decision would size an order against a price that is long
+   * gone — while still holding its share of the caps. Expiring is the honest
+   * answer: the copy did not happen. See {@link QUEUE_EXPIRY_MS}.
+   *
+   * A row mid-placement is left alone. `placeCopy` re-checks expiry itself, and
+   * cancelling underneath an in-flight signature would file "expired" over a
+   * copy that is about to come back `placed`.
+   */
+  const expireQueue = useCallback(() => {
+    const nowMs = Date.now();
+    const stale = ledgerRef.current.filter(
+      (entry) =>
+        entry.status === "queued" && !placingRef.current.has(entry.id) && hasExpired(entry, nowMs),
+    );
+    if (stale.length === 0) return;
+
+    let next = ledgerRef.current;
+    for (const entry of stale) {
+      next = updateLedgerEntry(next, entry.id, {
+        status: "cancelled",
+        error: "Expired before it could be placed",
+      });
+    }
+
+    ledgerRef.current = next;
+    setLedger(next);
+  }, []);
+
+  /**
+   * Signs and sends one queued copy, then records what came back.
+   *
+   * All the interesting work is in `placeCopy` — this is the plumbing around
+   * it: refuse anything not currently `queued` (a second click on a row that
+   * already went through), hold the id so the button can disable itself, and
+   * write the patch against `ledgerRef.current` rather than a snapshot taken
+   * before the round trip, since a poll may have appended rows meanwhile.
+   */
+  const placeQueued = useCallback(async (id: string) => {
+    if (placingRef.current.has(id)) return;
+
+    const entry = ledgerRef.current.find((row) => row.id === id);
+    if (!entry || entry.status !== "queued") return;
+
+    placingRef.current.add(id);
+    setPlacing([...placingRef.current]);
+
+    try {
+      const patch = await placeCopy(clientRef.current, entry);
+      const next = updateLedgerEntry(ledgerRef.current, id, patch);
+      ledgerRef.current = next;
+      setLedger(next);
+    } finally {
+      placingRef.current.delete(id);
+      setPlacing([...placingRef.current]);
+    }
   }, []);
 
   // localStorage is read in an effect, never during render: reading it while
@@ -281,14 +364,18 @@ export function useCopyEngine(): CopyEngine {
       // Inside the same `runningRef` guard as the poll above, so a slow sweep
       // cannot have the next tick's poll start behind it and re-evaluate an
       // intent against a ledger this sweep has not finished writing.
+      //
+      // Under `"live"` the queue is the user's to clear, so the pass only ages
+      // out what they never got to — it must never place anything itself.
       if (COPY_EXECUTION_MODE === "simulated") await resolveQueue();
+      else expireQueue();
 
       setLastCheckedAt(new Date(nowMs).toISOString());
     } finally {
       runningRef.current = false;
       setChecking(false);
     }
-  }, [commitFollows, resolveQueue]);
+  }, [commitFollows, resolveQueue, expireQueue]);
 
   // Held in a ref so the interval below is created once and never restarted by
   // a change of identity, which would reset its phase on every render. Declared
@@ -387,12 +474,17 @@ export function useCopyEngine(): CopyEngine {
     lastCheckedAt,
     checking,
     hydrated,
+    client,
+    walletStatus: clientStatus,
+    connectWallet,
+    placing,
     checkNow: () => void runCheckRef.current(),
     pauseAll: () => setPausedAll(true),
     resumeAll: () => setPausedAll(false),
     followTrader,
     unfollowTrader,
     dismissQueued,
+    placeQueued,
   };
 }
 

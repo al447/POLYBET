@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 
+import { CopyQueue } from "@/components/copy-trade/copy-queue";
 import { CopyStats } from "@/components/copy-trade/copy-stats";
 import { CopyTabs } from "@/components/copy-trade/copy-tabs";
 import { EngineStatusBar } from "@/components/copy-trade/engine-status-bar";
@@ -48,6 +49,10 @@ export function CopyDashboard({ traders }: { traders: ReactNode }) {
         onPauseAll={engine.pauseAll}
         onResumeAll={engine.resumeAll}
       />
+
+      {/* Above the tiles on purpose: this is the only thing on the page that
+          is waiting on the user, and a copy expires while they read. */}
+      <CopyQueue engine={engine} />
 
       <div className="mt-6">
         <CopyStats ledger={engine.ledger} />

@@ -9,6 +9,7 @@ import {
   markWalletDeployedCached,
   type BrowserClient,
 } from "@/lib/polymarket/browser-client";
+import { describeConnectError } from "@/lib/polymarket/clob-credentials";
 
 export type BrowserClientStatus = "signed-out" | "idle" | "connecting" | "ready" | "error";
 
@@ -64,7 +65,7 @@ export function useBrowserClient(): {
       setStatus("ready");
     } catch (err) {
       setStatus("error");
-      setError(err instanceof Error ? err.message : "wallet_setup_failed");
+      setError(describeConnectError(err));
     }
   }, [wallets]);
 

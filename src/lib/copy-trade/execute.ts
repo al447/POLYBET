@@ -1,23 +1,27 @@
 import type { BrowserClient, PreflightResult } from "@/lib/polymarket/browser-client";
 
-import { QUEUE_EXPIRY_MS, type CopyLedgerEntry } from "./types";
+import { COPY_MAX_SLIPPAGE, QUEUE_EXPIRY_MS, type CopyLedgerEntry } from "./types";
 
 /**
  * What happens to a copy after the engine has approved it.
  *
- * `engine.ts` answers "should we copy this, and how big" from data alone.
- * This file answers the two questions that need the outside world: **may this
- * order be placed at all** (the server preflight), and **can the wallet
- * afford it** (the pUSD balance). Same split as `trader-feed.ts` — the
- * decision is pure and unit-tested, the I/O is a thin wrapper around helpers
- * that already exist elsewhere.
+ * `engine.ts` answers "should we copy this, and how big" from data alone. This
+ * file answers the three questions that need the outside world: **is the market
+ * still tradeable**, **may this order be placed at all** (the server preflight),
+ * and **can the wallet afford it** (the pUSD balance) — then, on the live path,
+ * places it. Same split as `trader-feed.ts`: the decisions are pure and
+ * unit-tested, the I/O is a thin wrapper around helpers that already exist.
  *
- * 🚩 **Nothing here signs anything.** `/api/orders` is pre-trade authorization,
- * not order placement — it checks auth, geo, legal acceptance and input shape,
- * then discloses the fee. That is what makes it safe to call on every copy in a
- * dry run: it exercises the real gate without touching the CLOB. The actual
- * signing lives in `browser-client.ts` and is called by the click-to-place path,
- * not from here.
+ * 🚩 **`placeCopy` is the only function in this feature that signs anything,
+ * and it is only ever reached from a user's click.** Everything else here is
+ * checks. `/api/orders` in particular is pre-trade authorization, not order
+ * placement — it checks auth, geo, legal acceptance and input shape, then
+ * discloses the fee, which is what makes it safe to call on every copy in a dry
+ * run.
+ *
+ * The dry run and the live click share `checkCopyPreconditions` deliberately.
+ * Two copies of "may this copy proceed" would drift, and the dry run's whole
+ * purpose is to predict what the live path will do.
  */
 
 /**
@@ -46,38 +50,66 @@ export type ResolutionInput = {
   preflight: PreflightResult | null;
   /** Spendable pUSD, or `null` when it could not be read. */
   availableUsd: number | null;
+  /**
+   * Whether the market still accepts orders. `null` means it could not be read,
+   * and `undefined` means it was never looked up — the dry run does not spend a
+   * request on it. Neither blocks; only an explicit `false` does.
+   */
+  marketOpen?: boolean | null;
   nowMs: number;
 };
 
+/** Blocked with the row's final state, or clear to proceed with the disclosed fee. */
+export type CopyPrecheck =
+  | { blocked: true; patch: Partial<CopyLedgerEntry> }
+  | { blocked: false; feeBps: number };
+
 /**
- * The whole post-approval decision for one queued copy, as a ledger patch.
+ * Everything that can stop an approved copy, in the order it is checked.
  *
  * Pure, so every branch below is testable without a wallet, a signed-in user or
  * a live trader. Check order is part of the contract, same as `decideCopy`: the
  * first thing that makes the copy impossible wins, so the reason the user reads
- * is the one that actually stopped it.
+ * is the one that actually stopped it. `market_closed` sits above the preflight
+ * because it is a fact about the world — more useful to read than "rejected
+ * before signing".
  *
  * ⚠️ An unreadable balance (`availableUsd === null`) does **not** block. The
  * wallet may simply not be connected yet, and refusing every copy on a failed
  * read would make a transient RPC blip look like a permanent "Not enough pUSD".
- * A dry run over-reporting what it could afford is recoverable; a dry run that
- * silently reports nothing is not.
+ * Over-reporting what could be afforded is recoverable — the CLOB rejects an
+ * unfunded order anyway; silently reporting nothing is not.
  */
-export function planResolution(input: ResolutionInput): Partial<CopyLedgerEntry> {
-  const { entry, preflight, availableUsd, nowMs } = input;
+export function checkCopyPreconditions(input: ResolutionInput): CopyPrecheck {
+  const { entry, preflight, availableUsd, marketOpen, nowMs } = input;
 
-  // First, and before the preflight is even worth spending a request on: a
-  // decision this old is about a price that no longer exists.
+  // First, and before a single request is worth spending: a decision this old
+  // is about a price that no longer exists.
   if (hasExpired(entry, nowMs)) {
-    return { status: "cancelled", error: "Expired before it could be placed" };
+    return {
+      blocked: true,
+      patch: { status: "cancelled", error: "Expired before it could be placed" },
+    };
+  }
+
+  // Explicit `false` only — see `isMarketAcceptingOrders` on why a missing flag
+  // or a failed lookup is not evidence of a settled market.
+  if (marketOpen === false) {
+    return { blocked: true, patch: { status: "skipped", skipReason: "market_closed" } };
   }
 
   if (!preflight) {
-    return { status: "failed", error: "Could not reach the pre-trade check" };
+    return {
+      blocked: true,
+      patch: { status: "failed", error: "Could not reach the pre-trade check" },
+    };
   }
 
   if (!preflight.allowed) {
-    return { status: "skipped", skipReason: "preflight_rejected", error: preflight.message };
+    return {
+      blocked: true,
+      patch: { status: "skipped", skipReason: "preflight_rejected", error: preflight.message },
+    };
   }
 
   const feeBps = preflight.feeBps.taker;
@@ -92,15 +124,63 @@ export function planResolution(input: ResolutionInput): Partial<CopyLedgerEntry>
     // is reachable — and reading it as 0 would clear every balance check and
     // file a $0 "position" the tiles then sum.
     if (!Number.isFinite(amountUsd) || (amountUsd as number) <= 0) {
-      return { status: "failed", error: "Copy had no usable size" };
+      return { blocked: true, patch: { status: "failed", error: "Copy had no usable size" } };
     }
 
     if (availableUsd !== null && availableUsd < requiredUsd(amountUsd as number, feeBps)) {
-      return { status: "skipped", skipReason: "insufficient_balance", feeBps };
+      return {
+        blocked: true,
+        patch: { status: "skipped", skipReason: "insufficient_balance", feeBps },
+      };
     }
+  } else if (!Number.isFinite(entry.shares) || (entry.shares as number) <= 0) {
+    // The sell-side twin of the check above. `placeMarketSell` takes shares, so
+    // a row without them has nothing to send.
+    return { blocked: true, patch: { status: "failed", error: "Copy had no usable size" } };
   }
 
-  return { status: "simulated", feeBps };
+  return { blocked: false, feeBps };
+}
+
+/**
+ * The dry run's answer for one queued copy, as a ledger patch.
+ *
+ * Everything a live placement would refuse, refused identically — the only
+ * difference is that a copy which passes lands as `simulated` instead of being
+ * signed. That is the whole value of the dry run: if it says a copy would go
+ * through, the live path agrees.
+ */
+export function planResolution(input: ResolutionInput): Partial<CopyLedgerEntry> {
+  const check = checkCopyPreconditions(input);
+  return check.blocked ? check.patch : { status: "simulated", feeBps: check.feeBps };
+}
+
+/** The slippage bound sent with a copy — one side or neither, never both. Empty when there is no usable anchor price. */
+export type PriceGuard = { maxPrice?: string; minPrice?: string };
+
+/**
+ * The price band a copy may fill inside, anchored on the trader's own fill.
+ *
+ * Returns nothing when `expectedPrice` is unusable — an unguarded market order
+ * is worse than a guarded one, but a *wrongly* guarded one is worse still: a
+ * garbage anchor would set `maxPrice` somewhere arbitrary and every copy of
+ * that market would silently fail to fill.
+ *
+ * Three decimals because that is the CLOB's price granularity; more would be
+ * rejected as an invalid tick.
+ */
+export function priceGuard(entry: CopyLedgerEntry): PriceGuard {
+  const anchor = entry.expectedPrice;
+  if (!Number.isFinite(anchor) || (anchor as number) <= 0 || (anchor as number) >= 1) return {};
+
+  return entry.side === "BUY"
+    ? { maxPrice: clampPrice((anchor as number) * (1 + COPY_MAX_SLIPPAGE)).toFixed(3) }
+    : { minPrice: clampPrice((anchor as number) * (1 - COPY_MAX_SLIPPAGE)).toFixed(3) };
+}
+
+/** Keeps a guard inside the CLOB's valid price range, which is exclusive of 0 and 1. */
+function clampPrice(value: number): number {
+  return Math.min(Math.max(value, 0.001), 0.999);
 }
 
 /* ------------------------------------------------------------------ *
@@ -154,5 +234,105 @@ export async function readAvailableUsd(client: BrowserClient | null): Promise<nu
     return Number(await readCollateralBalance(client)) / 1e6;
   } catch {
     return null;
+  }
+}
+
+/** Whether the copied market still takes orders. `null` when it could not be read — see `isMarketAcceptingOrders`. */
+export async function readMarketOpen(
+  client: BrowserClient | null,
+  slug: string,
+): Promise<boolean | null> {
+  if (!client) return null;
+  const { isMarketAcceptingOrders } = await import("@/lib/polymarket/browser-client");
+  return isMarketAcceptingOrders(client, slug);
+}
+
+/**
+ * 🚩 Places one queued copy for real. **The only path in this feature that
+ * signs an order, and it runs only from the user's click.**
+ *
+ * Everything is re-checked here, at click time, and none of it is reused from
+ * when the engine queued the row. A preflight answer from five minutes ago says
+ * nothing about now: the market may have settled, the geo tier may have
+ * changed, the balance may have been spent by another tab. The row's *size* is
+ * the only thing carried forward from the decision, because that is what the
+ * user is agreeing to when they click.
+ *
+ * Returns a ledger patch rather than throwing, so one failed copy leaves an
+ * honest row and never takes down the queue around it. The three outcomes:
+ * `placed` with the CLOB's order id, `failed` with the reason, or one of the
+ * skip reasons when a precondition — settled market, rejected preflight, no
+ * pUSD — stopped it.
+ *
+ * ⚠️ `placed` means the CLOB **accepted** the order, not that it fully filled.
+ * A market order guarded by {@link COPY_MAX_SLIPPAGE} can fill partially and
+ * rest, and later fills arrive on the user channel, not here. The positions
+ * tiles read real holdings for exactly this reason.
+ */
+export async function placeCopy(
+  client: BrowserClient | null,
+  entry: CopyLedgerEntry,
+): Promise<Partial<CopyLedgerEntry>> {
+  if (!client) {
+    return { status: "failed", error: "Connect your wallet before placing a copy." };
+  }
+
+  // Cheap and first: an expired decision is not worth three network round
+  // trips. `checkCopyPreconditions` checks it again against a fresher clock.
+  if (hasExpired(entry, Date.now())) {
+    return { status: "cancelled", error: "Expired before it could be placed" };
+  }
+
+  // In parallel: they are independent reads, and doing them in series would add
+  // a second or more to a click the user is watching — during which the price
+  // this copy is anchored on keeps moving.
+  const [preflight, marketOpen, availableUsd] = await Promise.all([
+    runPreflight(entry),
+    readMarketOpen(client, entry.slug),
+    readAvailableUsd(client),
+  ]);
+
+  const check = checkCopyPreconditions({
+    entry,
+    preflight,
+    marketOpen,
+    availableUsd,
+    nowMs: Date.now(),
+  });
+  if (check.blocked) return check.patch;
+
+  try {
+    const { placeMarketBuy, placeMarketSell } = await import("@/lib/polymarket/browser-client");
+    const guard = priceGuard(entry);
+
+    // USD for a buy, shares for a sell — the same split `CopyDecision` records
+    // and `/api/orders` expects, carried through unchanged so no call site has
+    // to convert and get the direction wrong.
+    const response =
+      entry.side === "BUY"
+        ? await placeMarketBuy(client, {
+            tokenId: entry.tokenId,
+            amount: String(entry.amountUsd),
+            ...(guard.maxPrice ? { maxPrice: guard.maxPrice } : {}),
+          })
+        : await placeMarketSell(client, {
+            tokenId: entry.tokenId,
+            shares: String(entry.shares),
+            ...(guard.minPrice ? { minPrice: guard.minPrice } : {}),
+          });
+
+    if (!response.ok) {
+      return { status: "failed", feeBps: check.feeBps, error: response.message };
+    }
+
+    return { status: "placed", feeBps: check.feeBps, orderId: response.orderId };
+  } catch (error) {
+    // Includes the user rejecting the signature, which is a legitimate answer
+    // and lands as a failed row they can see rather than a silent no-op.
+    return {
+      status: "failed",
+      feeBps: check.feeBps,
+      error: error instanceof Error ? error.message : "order_failed",
+    };
   }
 }
