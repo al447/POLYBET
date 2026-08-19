@@ -38,10 +38,27 @@ const geistMono = localFont({
   display: "swap",
 });
 
+/**
+ * `metadataBase` is hardcoded rather than read from an env var on purpose.
+ *
+ * Next resolves the `opengraph-image` file convention *relative* to this. With
+ * it unset the built page emits a localhost URL and every shared link unfurls
+ * broken. A `NEXT_PUBLIC_*` var would work but reintroduces the build-time trap
+ * documented in `.env.example` — it has to be exported before
+ * `opennextjs-cloudflare build`, and forgetting it fails silently.
+ *
+ * The `template` brands every child page's tab. Routes that export a bare
+ * `title` (copy-trade, predict-ai, leaderboard, terms, risk-disclosure) render
+ * as "Copy Trading · Polybets" through it; without one they render unbranded.
+ */
 export const metadata: Metadata = {
-  title: "Prediction Markets",
+  metadataBase: new URL("https://polybets.xyz"),
+  title: {
+    default: "Polybets — Prediction Markets",
+    template: "%s · Polybets",
+  },
   description:
-    "Trade prediction markets on Polymarket liquidity. Self-custodial — you hold your own keys.",
+    "Polybets is a self-custodial interface to prediction markets on Polymarket liquidity — you hold your own keys.",
 };
 
 export default function RootLayout({

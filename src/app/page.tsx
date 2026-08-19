@@ -38,7 +38,7 @@ export default function Home() {
         {/* The hero is the page's visual heading now, so the h1 is here and
             hidden. `FeaturedHero` returns null if Gamma is unavailable, which
             is why the heading doesn't live inside it. */}
-        <h1 className="sr-only">Prediction markets</h1>
+        <h1 className="sr-only">Polybets — prediction markets</h1>
         <div className="mb-8">
           <Suspense fallback={<FeaturedHeroSkeleton />}>
             <FeaturedHero />

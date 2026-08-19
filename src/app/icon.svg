@@ -1,0 +1,29 @@
+<!--
+  Favicon. Same geometry as `LogoMark` in `src/components/ui/icons.tsx`, so the
+  tab icon and the nav mark stay the same shape.
+
+  Two deliberate differences from the component:
+  - Colours are literal hex, not `currentColor`. A standalone icon file has no
+    parent to inherit from, so `currentColor` would resolve to black.
+  - The mark sits on a filled zinc-950 field. Browser tab strips are light or
+    dark depending on theme, and an unfilled emerald outline disappears on one
+    of them.
+
+  The 24-unit `LogoMark` art is scaled 1.15x and centred in a 32-unit field:
+  its content spans (3,2)-(21,22), so the centre (12,12) maps to (16,16) via
+  translate(2.2) — leaving ~4.5 units of padding for the rounded corners.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <rect width="32" height="32" rx="7" fill="#09090b" />
+  <g
+    transform="translate(2.2 2.2) scale(1.15)"
+    fill="none"
+    stroke="#34d399"
+    stroke-width="1.75"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M12 2 L21 7 L21 17 L12 22 L3 17 L3 7 Z" />
+    <path d="M12 2 L12 22 M3 7 L21 17 M21 7 L3 17" stroke-width="1.25" opacity="0.5" />
+  </g>
+</svg>

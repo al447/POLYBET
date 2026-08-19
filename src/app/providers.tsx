@@ -42,7 +42,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
         appearance: {
           theme: "dark",
-          landingHeader: "Sign in to trade",
+          landingHeader: "Sign in to Polybets",
           loginMessage: "Prediction markets, powered by Polymarket.",
         },
 

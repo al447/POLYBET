@@ -36,7 +36,7 @@ export function NavBar() {
         <Link href="/" className="flex shrink-0 items-center gap-2">
           <LogoMark className="size-6 text-emerald-400" />
           <span className="hidden text-base font-semibold tracking-tight text-zinc-100 sm:inline">
-            Prediction Markets
+            Polybets
           </span>
         </Link>
 

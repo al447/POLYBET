@@ -422,7 +422,7 @@ Generated ${new Date().toISOString()}
 ## What this is
 
 Everything needed to take full ownership of the Polymarket builder profile
-behind your prediction-market platform. Whoever holds the private key below
+behind Polybets (polybets.xyz). Whoever holds the private key below
 controls the builder profile and its fee configuration.
 
 ## Builder profile owner wallet
