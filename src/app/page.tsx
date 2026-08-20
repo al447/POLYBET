@@ -1,7 +1,6 @@
 import { Suspense } from "react";
 
 import { GeoBanner } from "@/components/geo/geo-banner";
-import { ReadinessPanel } from "@/components/status/readiness-panel";
 import { RightSidebar } from "@/components/layout/right-sidebar";
 import { DiscoverySection, DiscoverySectionSkeleton } from "@/components/markets/discovery-section";
 import { FeaturedHero, FeaturedHeroSkeleton } from "@/components/markets/featured-hero";
@@ -42,16 +41,6 @@ export default function Home() {
         <div className="mb-8">
           <Suspense fallback={<FeaturedHeroSkeleton />}>
             <FeaturedHero />
-          </Suspense>
-        </div>
-
-        <div className="mb-8">
-          <Suspense
-            fallback={
-              <div className="h-32 rounded-xl border border-zinc-800 bg-zinc-900/40" />
-            }
-          >
-            <ReadinessPanel />
           </Suspense>
         </div>
 

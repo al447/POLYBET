@@ -10,6 +10,8 @@
  *
  *   1. SOURCE  — no 64-hex private-key literal anywhere in `src/`. Catches a
  *                pasted key at the point of entry, before it can bundle.
+ *                Values labelled as public on-chain ids (`conditionId`,
+ *                `txHash`, …) are exempt — see `PUBLIC_HEX32_FIELDS`.
  *   2. BUNDLE  — no server-only secret NAME in client output. This is what
  *                catches a server module being dragged into a Client Component.
  *   3. BUNDLE  — no actual secret VALUE from `.dev.vars` in client output.
@@ -42,6 +44,22 @@ const FORBIDDEN_NAMES = [
 
 /** A 32-byte hex value — the shape of a private key or a bytes32 builder code. */
 const HEX32 = /(?<![0-9a-fA-F])0x[0-9a-fA-F]{64}(?![0-9a-fA-F])/g;
+
+/**
+ * Fields whose value is a public on-chain identifier that shares a private
+ * key's shape.
+ *
+ * A CTF condition id is a keccak hash published in every market's Gamma
+ * record, and test fixtures are captured from real markets — so shape alone
+ * makes this gate red for data anyone can read off the chain. Matching on the
+ * *label* instead keeps the check meaningful: a pasted key arrives as
+ * `const KEY = "0x…"` with no such field name in front of it.
+ *
+ * Deliberately not a defence against someone naming a variable `conditionId`
+ * to smuggle a key past. That is evasion, not the accident this catches.
+ */
+const PUBLIC_HEX32_FIELDS =
+  /(?:conditionId|condition_id|questionId|question_id|negRiskMarketId|neg_risk_market_id|txHash|transactionHash|transaction_hash|blockHash|block_hash)["']?\s*[:=]\s*["']?$/;
 
 const BUNDLE_EXTENSIONS = new Set([
   ".js", ".mjs", ".cjs", ".json", ".txt", ".map", ".html", ".css",
@@ -106,11 +124,15 @@ let sourcesScanned = 0;
 for (const file of filesIn(SOURCE_DIRS, SOURCE_EXTENSIONS)) {
   sourcesScanned += 1;
   const content = readFileSync(file, "utf8");
-  for (const [match] of content.matchAll(HEX32)) {
+  for (const match of content.matchAll(HEX32)) {
+    // 40 chars is enough for `  conditionId: "` and any realistic indent.
+    const before = content.slice(Math.max(0, match.index - 40), match.index);
+    if (PUBLIC_HEX32_FIELDS.test(before)) continue;
+
     findings.push({
       file,
       kind: "hardcoded 32-byte hex",
-      detail: `${match.slice(0, 10)}… — keys and builder codes come from env`,
+      detail: `${match[0].slice(0, 10)}… — keys and builder codes come from env`,
     });
     break;
   }
