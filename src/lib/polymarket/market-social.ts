@@ -52,7 +52,8 @@ export type MarketTrade = {
   transactionHash?: string;
 };
 
-const REQUEST_TIMEOUT_MS = 8000;
+/** 6s, matching `gammaFetch`'s whole-call budget. No retries, so this is the worst case. */
+const REQUEST_TIMEOUT_MS = 6000;
 
 /** Both readers return `[]` rather than throwing — these are side panels, not the page. */
 async function dataApiFetch<T>(path: string): Promise<T | null> {

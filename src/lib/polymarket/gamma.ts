@@ -56,8 +56,16 @@ export type {
 } from "./gamma-types";
 
 const DEFAULT_LIMIT = 50;
-const MAX_RETRIES = 3;
-const REQUEST_TIMEOUT_MS = 8000;
+
+/**
+ * Retry budget for `gammaFetch`. Read the two together — they are a pair.
+ *
+ * `TOTAL_BUDGET_MS` bounds the WHOLE call including every retry and backoff,
+ * not each attempt. The old shape (`MAX_RETRIES = 3`, 8s per attempt) had no
+ * total bound at all and could run ~34.5s; see the note on `gammaFetch`.
+ */
+const MAX_RETRIES = 1;
+const TOTAL_BUDGET_MS = 6000;
 
 /**
  * Lists active events with their nested markets, sortable via `order` and
@@ -334,8 +342,21 @@ function buildQuery(params: Record<string, unknown>): string {
   return search.toString();
 }
 
+/**
+ * 🚩 429 is deliberately NOT retryable.
+ *
+ * It used to be. Retrying a rate limit is the one response where retrying makes
+ * the situation strictly worse: Gamma is asking for fewer requests, and a retry
+ * loop answers by multiplying them. Under load that closes into a feedback loop
+ * — traffic rises, 429s appear, every request fans out into several more, which
+ * produces more 429s. That is the mechanism by which a slow site becomes a down
+ * one, and it is worth giving up a rare recovered request to remove it.
+ *
+ * A 429 now surfaces immediately as a `GammaApiError`, which `getCachedEvents`
+ * already converts to `{ok: false}` and the UI already renders as its error box.
+ */
 function isRetryableStatus(status: number): boolean {
-  return status === 429 || status >= 500;
+  return status >= 500;
 }
 
 function backoffMs(attempt: number): number {
@@ -346,18 +367,42 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Fetch with a timeout and exponential backoff retry on 429/5xx and network errors. */
+/**
+ * Fetch with a **whole-call** budget and one retry on 5xx / network errors.
+ *
+ * 🚩 The budget is per call, not per attempt, and that distinction is the whole
+ * point of this function's shape.
+ *
+ * It previously ran a per-attempt 8s timeout with `MAX_RETRIES = 3`, giving
+ * `4 x 8s + backoff ≈ 34.5s` for one logical call — with no ceiling on the
+ * total. The homepage fans out several of these across its Suspense boundaries,
+ * so the page could stall far past any edge timeout while every individual
+ * `AbortController` looked correctly configured. Measured 2026-08-22: homepage
+ * first byte 0.03s, last byte up to 26s.
+ *
+ * `deadline` is computed once, before the loop, and each attempt gets only the
+ * time actually remaining. So the caller's worst case is `TOTAL_BUDGET_MS` plus
+ * one backoff, whatever happens upstream.
+ *
+ * For scale: Gamma answers in ~0.11s when healthy (measured the same day, with
+ * no rate limiting across a 10-request burst). A 6s budget is ~50x that — it
+ * bounds a genuine outage without touching a normal request.
+ */
 async function gammaFetch<T>(path: string): Promise<T> {
   const url = `${POLYMARKET_ENDPOINTS.gamma}${path}`;
+  const deadline = Date.now() + TOTAL_BUDGET_MS;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt += 1) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new GammaApiError(`Gamma ${path} exceeded ${TOTAL_BUDGET_MS}ms budget`, 0, path);
+    }
+
     let shouldRetry = false;
 
     try {
       const response = await fetch(url, {
-        signal: controller.signal,
+        signal: AbortSignal.timeout(remaining),
         headers: { accept: "application/json" },
       });
 
@@ -380,11 +425,18 @@ async function gammaFetch<T>(path: string): Promise<T> {
         throw new GammaApiError(`Gamma ${path} failed: ${message}`, 0, path);
       }
       shouldRetry = true;
-    } finally {
-      clearTimeout(timeout);
     }
 
-    if (shouldRetry) await sleep(backoffMs(attempt));
+    // Only sleep if the backoff still fits inside the budget — otherwise the
+    // retry could not run anyway, and sleeping first would spend the caller's
+    // remaining time to arrive at the same failure.
+    if (shouldRetry) {
+      const backoff = backoffMs(attempt);
+      if (Date.now() + backoff >= deadline) {
+        throw new GammaApiError(`Gamma ${path} exceeded ${TOTAL_BUDGET_MS}ms budget`, 0, path);
+      }
+      await sleep(backoff);
+    }
   }
 
   throw new GammaApiError(`Gamma ${path} exhausted retries`, 0, path);

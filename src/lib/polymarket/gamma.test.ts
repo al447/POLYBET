@@ -264,15 +264,14 @@ describe("listTags", () => {
 });
 
 describe("retry behavior", () => {
-  it("retries on 429/5xx with backoff, then succeeds", async () => {
+  it("retries a 5xx with backoff, then succeeds", async () => {
     vi.useFakeTimers();
     let calls = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
         calls += 1;
-        if (calls === 1) return new Response("", { status: 429 });
-        if (calls === 2) return new Response("", { status: 503 });
+        if (calls === 1) return new Response("", { status: 503 });
         return new Response(JSON.stringify({ events: [] }), { status: 200 });
       }),
     );
@@ -281,8 +280,57 @@ describe("retry behavior", () => {
     await vi.runAllTimersAsync();
     const page = await promise;
 
-    expect(calls).toBe(3);
+    expect(calls).toBe(2);
     expect(page.items).toEqual([]);
+  });
+
+  /**
+   * 🚩 Pins the 2026-08-22 change. A 429 used to be retryable, which meant
+   * Gamma asking for fewer requests was answered with four times as many —
+   * the feedback loop that turns load into an outage. Retrying it is strictly
+   * worse than failing, so this asserts exactly one call.
+   */
+  it("does NOT retry a 429 — retrying a rate limit amplifies it", async () => {
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        calls += 1;
+        return new Response("", { status: 429 });
+      }),
+    );
+
+    const error = await listEvents().catch((e: unknown) => e);
+
+    expect(calls).toBe(1);
+    expect(error).toBeInstanceOf(GammaApiError);
+    expect((error as GammaApiError).status).toBe(429);
+  });
+
+  /**
+   * The budget bounds the WHOLE call, so the attempt count is capped no matter
+   * what upstream does. Before this change it was 4 attempts at 8s each with no
+   * total ceiling (~34.5s); the homepage fans several of these out in parallel.
+   */
+  it("makes at most two attempts, and every attempt carries an abort signal", async () => {
+    // Real timers on purpose. `AbortSignal.timeout` schedules outside the
+    // timer queue vitest fakes, so mixing the two here is a flake risk; the
+    // stub resolves instantly and the single backoff is ~300-450ms.
+    const signals: (AbortSignal | null | undefined)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: unknown, init?: RequestInit) => {
+        signals.push(init?.signal);
+        return new Response("", { status: 500 });
+      }),
+    );
+
+    await listEvents().catch((error: unknown) => error);
+
+    expect(signals).toHaveLength(2);
+    for (const signal of signals) {
+      expect(signal).toBeInstanceOf(AbortSignal);
+    }
   });
 
   it("does not retry a 404", async () => {

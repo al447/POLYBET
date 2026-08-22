@@ -31,7 +31,23 @@ export function createPrivyProvider(env: ServerEnv): AuthProvider {
   // Imported lazily so an SDK change cannot break unrelated routes at load time.
   const clientPromise = (async () => {
     const { PrivyClient } = await import("@privy-io/node");
-    return new PrivyClient({ appId, appSecret });
+    /**
+     * 🚩 `timeout` and `maxRetries` are passed explicitly because the SDK's
+     * defaults are far too generous for a Worker request.
+     *
+     * Verified 2026-08-22 in `@privy-io/node@0.28.0`: `client.js:134` resolves
+     * `timeout` to `DEFAULT_TIMEOUT` — documented at `:64` as "1 minute" — and
+     * `:144` resolves `maxRetries` to `2`. `:408` retries on request timeouts.
+     * So an unresponsive Privy gives **3 attempts x 60s = ~180 seconds** on a
+     * single call, which on its own exceeds any edge ceiling a visitor will sit
+     * through. `recordLegalAcceptance` below is the exposed path.
+     *
+     * Nothing caught this at build time: both options are optional, so the
+     * default is silent. Privy answers in well under a second normally — 8s is
+     * already many multiples of healthy, and one retry covers a dropped
+     * connection without letting a stall compound.
+     */
+    return new PrivyClient({ appId, appSecret, timeout: 8_000, maxRetries: 1 });
   })();
 
   return {

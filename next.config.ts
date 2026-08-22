@@ -121,9 +121,42 @@ const securityHeaders = [
   { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
 ];
 
+/**
+ * Brand assets are committed bytes that never change between deploys — but Next
+ * serves each through a metadata *route*, so the Worker re-renders them on every
+ * request and they ship `Cache-Control: public, max-age=0, must-revalidate`.
+ *
+ * Measured 2026-08-22 against the deployed Worker, on the exact URLs the HTML
+ * references (`/icon.svg?icon.08tbp-dnjbr18.svg` etc.):
+ *
+ *   /icon.svg             0.65  2.61  6.91  7.15  7.58  7.92  11.62 s
+ *   /apple-icon.png       0.95  1.23 s
+ *   /opengraph-image.png  4.19  6.24 s
+ *
+ * `<link rel="icon">` is in the layout, so **every page navigation** revalidates
+ * the icon and pays that. `must-revalidate` with `max-age=0` is what forces it.
+ *
+ * ⚠️ What this fixes and what it does not. A Worker runs *before* Cloudflare's
+ * cache on a custom domain, so this does NOT make the edge serve these — a
+ * first-time visitor still pays one slow request. What it does remove is the
+ * re-request on every subsequent navigation, which is the repeated cost.
+ * Genuine edge caching needs the asset-resolver override (Phase 2).
+ *
+ * Deliberately NOT `immutable` with a one-year age: the app was rebranded to
+ * Polybets on 2026-08-19, and pinning a stale logo into browsers for a year is
+ * a worse failure than a slow icon. One day, with a week of stale-while-
+ * revalidate, keeps a rebrand propagating on its own.
+ */
+const BRAND_ASSET_CACHE_CONTROL = "public, max-age=86400, stale-while-revalidate=604800";
+const BRAND_ASSETS = ["/icon.svg", "/apple-icon.png", "/opengraph-image.png"];
+
 const nextConfig: NextConfig = {
   async headers() {
     return [
+      ...BRAND_ASSETS.map((source) => ({
+        source,
+        headers: [{ key: "Cache-Control", value: BRAND_ASSET_CACHE_CONTROL }],
+      })),
       {
         source: "/:path*",
         headers: [

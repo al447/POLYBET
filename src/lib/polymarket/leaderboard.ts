@@ -47,7 +47,8 @@ import type {
  * "this trader is up" says nothing about what a market is tradeable at.
  */
 
-const REQUEST_TIMEOUT_MS = 8000;
+/** 6s, matching `gammaFetch`'s whole-call budget. No retries, so this is the worst case. */
+const REQUEST_TIMEOUT_MS = 6000;
 
 export type LeaderboardParams = {
   periodId?: LeaderboardPeriodId;

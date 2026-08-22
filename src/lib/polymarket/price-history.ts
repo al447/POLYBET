@@ -57,7 +57,14 @@ export type PriceHistoryParams = {
   fidelity?: number;
 };
 
-const REQUEST_TIMEOUT_MS = 8000;
+/**
+ * 6s, matching `gammaFetch`'s whole-call budget. There are no retries here, so
+ * this really is the worst case — but `getCachedRangeHistories` fans out up to
+ * `MAX_SERIES` of these in parallel, and the chart renders inside a Suspense
+ * boundary, so a slow CLOB stalls the page stream rather than erroring.
+ * Healthy responses are well under a second.
+ */
+const REQUEST_TIMEOUT_MS = 6000;
 
 /**
  * Fetches a price series. **Returns `[]` instead of throwing.**
