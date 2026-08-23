@@ -149,13 +149,28 @@ export type CachedFixturesResult =
  * events; a single unexpected shape anywhere in that should cost the page its
  * fixture list, not the whole render.
  *
- * The slow-moving-aggregate cache tier (60/300/900), not the 30/60/300 that
+ * The slow-moving-aggregate cache tier (60/300/3600), not the 30/60/300 that
  * price-derived listings use: kickoff times and league names do not move, and
  * the twelve-request fan-out makes a short window expensive.
+ *
+ * 🚩 `expire` was 900 and is deliberately an hour. Nothing refreshes this entry
+ * in the background — OpenNext's `queue` defaults to `"dummy"`, whose `send()`
+ * throws, so `revalidateIfRequired` logs "Failed to revalidate stale page
+ * /predict-ai" and stops. Past `expire` the entry is gone and the next visitor
+ * pays the full twelve-page walk *inline*; inside it, a stale board is served
+ * without blocking. Widening the window is therefore the difference between an
+ * idle route falling off that cliff every 15 minutes and every hour. Measured
+ * 2026-08-23: site traffic was ~167 requests / 30 min, so gaps between visits to
+ * a minor route routinely exceeded the old 900s and most of its visits were cold
+ * rebuilds.
+ *
+ * ⚠️ The cost is a board up to an hour old. Acceptable *here* only because of the
+ * warning at the top of this file — these are browse-by snapshots that may never
+ * inform an order. Do not copy this tier onto a price-derived route.
  */
 export async function getCachedFixtures(): Promise<CachedFixturesResult> {
   "use cache";
-  cacheLife({ stale: 60, revalidate: 300, expire: 900 });
+  cacheLife({ stale: 60, revalidate: 300, expire: 3600 });
   cacheTag("gamma:fixtures");
 
   try {

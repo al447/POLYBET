@@ -472,8 +472,8 @@ Bundle went **down** 5262.86 → 5255.50 KiB gzip.
 
 ## How to read a 504 report
 
-Three external analyses of this app's 504s all reached the same wrong conclusion. Before
-acting on a fourth:
+**Four** external analyses of this app's 504s have now reached the same wrong conclusion —
+the fourth is recorded at the foot of this section. Before acting on a fifth:
 
 **1. Check what "since the last deployment" means.** One report was windowed from
 `08:59:34Z` when the live version was from `13:23:58Z` — it was counting a fixed period as
@@ -493,6 +493,73 @@ routes" was disproved in 30 seconds by curling six of them. "18+ sequential fetc
 | Add `AbortSignal.timeout()` to fetches | All five have had one since before this work: `gamma.ts` 6s, `price-history.ts` 6s, `leaderboard.ts` 6s, `market-social.ts` 6s, `geo/edge.ts` 2.5s |
 | Cache API responses / serve stale | The R2 bucket **is** the Next incremental cache. `expire` already serves stale rather than blocking |
 | Batch/reduce subrequests | Measured **1.41 per request** |
+
+**5. Check that the report is even about this codebase.** Added after report #4 named a
+Render backend that exists in a *different* project on the same machine. Grep for any host
+it mentions before believing the causal chain built on it.
+
+**6. Read the report's own numbers against its own headline.** Report #4 asserted a "504
+burst" above a table showing `ok 161, canceled 2, exceededCpu 0, exception 0` and statuses
+`200 x 167`, `0 (canceled) x 2` — **no 5xx at all**.
+
+---
+
+### Report #4 (2026-08-23, Cloudflare agent) — `/predict-ai` revalidation
+
+Blamed a 504 burst at 15:21–15:22 UTC on `/predict-ai` ISR revalidation calling
+`polybet365-api-live-0s8z.onrender.com` and hanging past the 100s limit. Every load-bearing
+claim was false:
+
+| Claim | Reality |
+|---|---|
+| A 504 burst occurred | Its own outcome table contains **zero** 5xx (see point 6) |
+| Revalidation calls a Render backend | **0 hits** for that host across `src/`, `scripts/`, configs. It belongs to `/Users/sayem/projects/PREDICT-ME`, a separate repo |
+| `/predict-ai` uses ISR with `revalidate` | **No `export const revalidate` or `dynamic` anywhere in `src/app/`.** Caching is `"use cache"` + `cacheLife` |
+| The revalidation fetch hangs | It is a synchronous throw from a stub — see [Trap 12](#trap-12--every-stale-serve-logs-a-revalidation-error-by-design) |
+| Roll back to `a153ad17-1935-4e4d-b2a6-0f4ffb797119` | **Not one of the Worker's 10 versions.** Live was `9801dc72` (14:17:23Z) |
+| Set `revalidate: 0` / `force-dynamic` | Would make it **worse** — drops the cache so every visitor pays the full twelve-page Gamma walk |
+
+Live probes taken while reading it: `/predict-ai` 10/10 x 200 (0.22–1.85s), seven routes all
+200, homepage 20/20 x 200 with a 5.57s tail.
+
+⚠️ **It was still worth reading.** Its *observation* — 4 requests over 5s, all `/predict-ai`,
+CPU 9–18ms — was real and correctly identified the slowest path on the site. Low CPU with
+high wall time is the signature of waiting, not computing. The fix that came out of it
+(an 8s `withBudget` ceiling on the page plus `expire` 900 -> 3600) is in the commit that
+added this section. **Separate a report's measurements from its conclusions** — the first
+can be sound while the second is unrelated to this codebase.
+
+---
+
+### Trap 12 — Every stale serve logs a revalidation error, by design
+
+`Failed to revalidate stale page <path>` is **not a timeout and not a hang.** OpenNext's
+`queue` defaults to `"dummy"`:
+
+```js
+// @opennextjs/cloudflare/dist/api/config.js
+function resolveQueue(value = "dummy") { ... }
+
+// @opennextjs/aws/dist/overrides/queue/dummy.js
+send: async () => { throw new FatalError("Dummy queue is not implemented"); },
+```
+
+`revalidateIfRequired` (`@opennextjs/aws/dist/core/routing/util.js:298`) calls
+`globalThis.queue.send(...)`, catches the throw and logs it. **No fetch is made, nothing
+waits, and the response is unaffected.** It has fired on every stale serve of every route
+since `open-next.config.ts` was written, and `open-next.config.ts` explains why no queue is
+configured (`memoryQueue` broke the homepage and was reverted).
+
+Two consequences that matter more than the log line:
+
+- **Nothing is ever revalidated in the background.** An entry goes fresh -> stale -> expired
+  and is only ever rebuilt by a visitor paying for it inline. `expire` is therefore not a
+  safety net, it is the actual refresh interval, and on a low-traffic route most visits land
+  past it. This is what made `/predict-ai` — the site's most expensive entry, up to twelve
+  sequential Gamma pages — the slowest path on the site.
+- **The log correlates with slow requests without causing them.** It fires exactly when a
+  page is served stale, which is the same condition that makes the *foreground* rebuild
+  expensive. Reading the correlation as causation is what report #4 did.
 
 ---
 
