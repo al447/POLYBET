@@ -3,6 +3,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { withBudget } from "@/lib/budget";
 import { getCachedEventBySlug } from "@/lib/polymarket/gamma";
 import { MarketTradingSection } from "@/components/markets/market-trading-section";
 import {
@@ -27,7 +28,31 @@ import { formatUsd } from "@/lib/format";
  * Keyed by *event* slug, not a single market's slug — an event can bundle
  * many binary markets (e.g. one per candidate), and this page needs all of
  * them to render the outcome list.
+ *
+ * 🚩 The event fetch is awaited HERE, before anything streams, and it must stay
+ * that way. Moving it into a <Suspense> boundary was tried on 2026-08-23 and
+ * reverted the same hour: the response is `Transfer-Encoding: chunked`, so the
+ * status line is flushed with the shell, and a `notFound()` that resolves later
+ * cannot change it. Measured — a nonexistent slug rendered the correct 404 UI
+ * under an HTTP **200**. This site is actively probed by scanners (see
+ * improvement.md Trap 1); answering 200 to every `/market/<garbage>` is worse
+ * than a slightly later first paint.
+ *
+ * What DID have to change is the bound. Until the same day this await had no
+ * ceiling at all, so a slow cache rebuild held the whole page open to the 100s
+ * edge timeout — which is why `/market/*` was 13 of the 15 paths 504ing in the
+ * window after a deploy (a deploy re-keys the entire R2 cache, so the first
+ * visitor to each slug pays the rebuild inline). `withBudget` is the fix; the
+ * Suspense split was a first-paint nicety that cost correctness.
  */
+/**
+ * Hard ceiling on the event fetch. Rationale for bounding the whole operation
+ * rather than its parts is on `withBudget` in `lib/budget.ts`. 8s is well past
+ * a healthy render (1.6-2.6s measured, warm or cold) and far under the ~100s
+ * edge timeout.
+ */
+const MARKET_BUDGET_MS = 8000;
+
 export default async function MarketDetailPage({
   params,
 }: {
@@ -35,20 +60,39 @@ export default async function MarketDetailPage({
 }) {
   const { slug } = await params;
 
-  let event;
+  let result: { event: Awaited<ReturnType<typeof getCachedEventBySlug>> } | null;
   try {
-    event = await getCachedEventBySlug(slug);
+    // 🚩 The `.then()` wrapper is load-bearing, not style. `getCachedEventBySlug`
+    // already returns `null` for a genuine 404, so racing it directly would make
+    // "slow" and "no such market" indistinguishable — and a slow rebuild would
+    // render a 404 page for a market that exists. Boxing the result means only
+    // the *outer* null can mean "out of time".
+    result = await withBudget(
+      getCachedEventBySlug(slug).then((event) => ({ event })),
+      MARKET_BUDGET_MS,
+    );
   } catch (error) {
     return (
-      <div className="mx-auto w-full max-w-7xl px-6 py-12">
-        <p className="rounded-lg border border-red-900/50 bg-red-950/30 px-4 py-6 text-center text-sm text-red-300">
-          Couldn&apos;t load this market right now (
-          {error instanceof Error ? error.message : "unknown error"}). Try refreshing.
-        </p>
-      </div>
+      <Notice tone="error">
+        Couldn&apos;t load this market right now (
+        {error instanceof Error ? error.message : "unknown error"}). Try refreshing.
+      </Notice>
     );
   }
 
+  // Three distinct outcomes, deliberately: Gamma errored (above), we ran out of
+  // time (here), or the market genuinely does not exist (below). Collapsing the
+  // middle one into either of the others is how a transient slow rebuild starts
+  // looking like a permanently missing market.
+  if (result === null) {
+    return (
+      <Notice tone="slow">
+        This market is taking longer than usual to load. Refresh to try again.
+      </Notice>
+    );
+  }
+
+  const event = result.event;
   if (!event) notFound();
 
   // Holders and trades are keyed by condition id, which lives on a market, not
@@ -132,6 +176,28 @@ export default async function MarketDetailPage({
           </>
         }
       />
+    </div>
+  );
+}
+
+/**
+ * Full-page message for the two non-render outcomes.
+ *
+ * `error` is red because something broke and refreshing may not help; `slow` is
+ * amber because nothing is wrong — the cache is cold and a retry very likely
+ * works. Keeping them visually distinct matters more than it looks: a cold
+ * rebuild after a deploy is routine, and dressing it as an error trains people
+ * to ignore the real one.
+ */
+function Notice({ tone, children }: { tone: "error" | "slow"; children: React.ReactNode }) {
+  const styles =
+    tone === "error"
+      ? "border-red-900/50 bg-red-950/30 text-red-300"
+      : "border-amber-500/30 bg-amber-500/10 text-amber-200";
+
+  return (
+    <div className="mx-auto w-full max-w-7xl px-6 py-12">
+      <p className={`rounded-lg border px-4 py-6 text-center text-sm ${styles}`}>{children}</p>
     </div>
   );
 }

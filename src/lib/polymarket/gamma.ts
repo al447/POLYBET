@@ -242,14 +242,51 @@ const LIST_EVENT_FIELDS: Record<keyof GammaEvent, boolean> = {
   markets: true,
 };
 
-const keptKeys = (fields: Record<string, boolean>) =>
-  new Set(Object.keys(fields).filter((key) => fields[key]));
+const keptKeys = <T extends object>(fields: Record<keyof T, boolean>) =>
+  (Object.keys(fields) as (keyof T)[]).filter((key) => fields[key]);
 
-const KEPT_MARKET_KEYS = keptKeys(LIST_MARKET_FIELDS);
-const KEPT_EVENT_KEYS = keptKeys(LIST_EVENT_FIELDS);
+const LIST_MARKET_KEYS = keptKeys<GammaMarket>(LIST_MARKET_FIELDS);
+const LIST_EVENT_KEYS = keptKeys<GammaEvent>(LIST_EVENT_FIELDS);
 
-const pick = <T extends object>(source: T, keep: Set<string>): T =>
-  Object.fromEntries(Object.entries(source).filter(([key]) => keep.has(key))) as T;
+/**
+ * Detail keeps every **declared** key, including the two prose fields browse
+ * drops — `MarketRules` and `MarketFaq` read them. What it sheds is the 58 keys
+ * Gamma sends that this file never declares, which no TypeScript consumer can
+ * read by definition. Measured at ~52% of the raw payload.
+ *
+ * Derived from the same maps rather than a second pair, so adding a field to
+ * `GammaMarket` flows here automatically while still forcing an explicit
+ * keep-or-drop decision for browse.
+ */
+const DETAIL_MARKET_KEYS = Object.keys(LIST_MARKET_FIELDS) as (keyof GammaMarket)[];
+const DETAIL_EVENT_KEYS = Object.keys(LIST_EVENT_FIELDS) as (keyof GammaEvent)[];
+
+/**
+ * 🚩 Reads the kept keys directly instead of rebuilding every key.
+ *
+ * The previous shape was `Object.entries -> filter -> Object.fromEntries`, which
+ * for a browse page meant ~137,000 key-value pairs allocated, filtered and
+ * rebuilt (1,579 nested markets x 87 keys) to keep 24 of them. This touches only
+ * the keys it keeps.
+ *
+ * The `undefined` check reproduces the old behaviour exactly: `Object.entries`
+ * only yields keys actually present, so a field Gamma omitted stayed omitted.
+ * (JSON never produces a present-but-undefined value, so nothing else changes.)
+ * Output key order now follows our declaration rather than Gamma's, which
+ * affects serialised byte order and nothing else.
+ *
+ * ⚠️ The cast stays INSIDE this helper. At a call site it would weaken the
+ * `Record<keyof GammaMarket, boolean>` guard on the field maps above, which is
+ * what makes adding an undecided field a build failure.
+ */
+function pickKeys<T extends object>(source: T, keys: readonly (keyof T)[]): T {
+  const out = {} as T;
+  for (const key of keys) {
+    const value = source[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
 
 /**
  * Narrows one event to the browse shape. Called **inside** the `"use cache"`
@@ -261,8 +298,24 @@ const pick = <T extends object>(source: T, keep: Set<string>): T =>
  * inferred from a route test.
  */
 export function projectEventForList(event: GammaEvent): GammaEvent {
-  const projected = pick(event, KEPT_EVENT_KEYS);
-  projected.markets = (event.markets ?? []).map((market) => pick(market, KEPT_MARKET_KEYS));
+  const projected = pickKeys(event, LIST_EVENT_KEYS);
+  projected.markets = (event.markets ?? []).map((market) => pickKeys(market, LIST_MARKET_KEYS));
+  return projected;
+}
+
+/**
+ * Narrows one event to the detail shape — everything declared, nothing else.
+ *
+ * Separate from `projectEventForList` because the detail page genuinely reads
+ * `description`/`resolutionSource` and a browse card does not. Both drop the
+ * undeclared majority; only this one keeps the prose.
+ *
+ * Exported for `gamma.test.ts` for the same reason as its browse sibling: the
+ * failure mode is missing content, not an error.
+ */
+export function projectEventForDetail(event: GammaEvent): GammaEvent {
+  const projected = pickKeys(event, DETAIL_EVENT_KEYS);
+  projected.markets = (event.markets ?? []).map((market) => pickKeys(market, DETAIL_MARKET_KEYS));
   return projected;
 }
 
@@ -329,13 +382,24 @@ export async function getEventBySlug(slug: string): Promise<GammaEvent | null> {
   }
 }
 
-/** Cached event-by-slug — same ~30-60s policy as `getCachedEvents`. */
+/**
+ * Cached event-by-slug — the market detail page.
+ *
+ * Deliberately keeps the tight `{30, 60, 300}` window that the browse caches
+ * moved off: this one sits beside the order ticket, so a stale event here is a
+ * different class of wrong from a stale browse card.
+ *
+ * Projected since 2026-08-23, but through `projectEventForDetail` rather than
+ * the browse projection — it keeps every declared field including the two prose
+ * ones `MarketRules`/`MarketFaq` read, and drops only the keys nothing can read.
+ */
 export async function getCachedEventBySlug(slug: string): Promise<GammaEvent | null> {
   "use cache";
   cacheLife({ stale: 30, revalidate: 60, expire: 300 });
   cacheTag(`gamma:event:${slug}`);
 
-  return getEventBySlug(slug);
+  const event = await getEventBySlug(slug);
+  return event === null ? null : projectEventForDetail(event);
 }
 
 /**

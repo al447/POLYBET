@@ -7,6 +7,7 @@ import {
   listMarkets,
   listTags,
   parseGammaJsonArray,
+  projectEventForDetail,
   projectEventForList,
   searchEvents,
 } from "./gamma";
@@ -461,7 +462,8 @@ describe("projectEventForList", () => {
   /**
    * The single heaviest field in the payload, ~1.6 KB x 1,619 markets. Read
    * only by MarketRules/MarketFaq on /market/[slug], which is served by
-   * getCachedEventBySlug — a different cache, deliberately not projected.
+   * `getCachedEventBySlug` — a different cache, projected through
+   * `projectEventForDetail` below, which keeps exactly these two fields.
    */
   it("drops prose from NESTED markets but keeps it on the event", () => {
     const projected = projectEventForList(rawEvent);
@@ -484,5 +486,58 @@ describe("projectEventForList", () => {
     const after = JSON.stringify(projectEventForList(rawEvent)).length;
 
     expect(after).toBeLessThan(before);
+  });
+
+  /**
+   * The detail cache's projection, added 2026-08-23. Its whole reason to exist
+   * separately from the browse one is the prose: `MarketRules` and `MarketFaq`
+   * read `description`/`resolutionSource` off the NESTED market, which browse
+   * drops. Everything else about the two is the same argument — the undeclared
+   * keys are unreadable, so shedding them cannot change behaviour.
+   *
+   * The failure mode is missing content on the market page, never an error, so
+   * the difference between the two projections is pinned directly.
+   */
+  describe("projectEventForDetail", () => {
+    it("keeps the nested-market prose that browse drops", () => {
+      const [market] = projectEventForDetail(rawEvent).markets;
+
+      expect(market.description).toBe(
+        "Long resolution prose that only the detail page ever shows.",
+      );
+      expect(market.resolutionSource).toBe("https://example.com");
+    });
+
+    it("still drops the undeclared keys", () => {
+      const projected = projectEventForDetail(rawEvent);
+      const [market] = projected.markets;
+
+      expect(market).not.toHaveProperty("clobRewards");
+      expect(market).not.toHaveProperty("positionIds");
+      expect(market).not.toHaveProperty("questionID");
+      expect(projected).not.toHaveProperty("seriesSlug");
+      expect(projected).not.toHaveProperty("commentCount");
+    });
+
+    it("keeps everything the trading surface reads", () => {
+      const [market] = projectEventForDetail(rawEvent).markets;
+
+      // TradingPanel / OutcomeList / rankEventOutcomes inputs. A gap here is
+      // an unusable order ticket, not a cosmetic one.
+      expect(market.clobTokenIds).toBe('["111","222"]');
+      expect(market.outcomes).toBe('["Yes","No"]');
+      expect(market.outcomePrices).toBe('["0.62","0.38"]');
+      expect(market.conditionId).toBe("0xabc123");
+      expect(market.id).toBe("253591");
+      expect(market.closed).toBe(false);
+    });
+
+    it("survives an event with no markets array", () => {
+      const bare = { id: "1", slug: "s", title: "t", active: true, closed: false } as Parameters<
+        typeof projectEventForDetail
+      >[0];
+
+      expect(projectEventForDetail(bare).markets).toEqual([]);
+    });
   });
 });
