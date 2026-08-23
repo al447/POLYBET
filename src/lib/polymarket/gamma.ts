@@ -161,6 +161,111 @@ export async function searchEvents(params: SearchEventsParams): Promise<SearchPa
   };
 }
 
+/**
+ * 🚩 What a *browse* cache entry is allowed to carry.
+ *
+ * Measured 2026-08-23 on the live `/api/markets` response: **6.80 MB** for 50
+ * events, holding 1,619 nested markets. Gamma returns **88 keys per market**;
+ * this file declares types for **29**. The other 59 are unreadable by any
+ * TypeScript consumer and were being stored, transferred and parsed on every
+ * render regardless.
+ *
+ * That payload is the reason the homepage sat at its 8s hero ceiling: Gamma
+ * itself answered in 0.07–0.55s while our cached layer took 1.46–3.56s for the
+ * same data. The cost is R2 transfer and JSON parse, not the upstream fetch.
+ *
+ * `true` = keep, `false` = drop. Typing these as `Record<keyof …, boolean>` is
+ * the load-bearing part: **adding a field to `GammaMarket` or `GammaEvent`
+ * without deciding here is a compile error**, which is what stops this drifting
+ * back into "store everything". A dropped field surfaces as *missing content*
+ * rather than an error, so the compiler has to be the thing that catches it.
+ *
+ * ⚠️ Applies to the **list** caches only — `getCachedEvents` and
+ * `getCachedSearch`. `getCachedEventBySlug` is deliberately untouched: it feeds
+ * the detail page beside the order ticket, and `MarketRules` / `MarketFaq` read
+ * exactly the two prose fields dropped below.
+ */
+const LIST_MARKET_FIELDS: Record<keyof GammaMarket, boolean> = {
+  id: true,
+  conditionId: true,
+  slug: true,
+  question: true,
+  outcomes: true,
+  outcomePrices: true,
+  clobTokenIds: true,
+  volume: true,
+  volumeNum: true,
+  liquidity: true,
+  liquidityNum: true,
+  bestBid: true,
+  bestAsk: true,
+  lastTradePrice: true,
+  active: true,
+  closed: true,
+  archived: true,
+  startDate: true,
+  endDate: true,
+  category: true,
+  image: true,
+  icon: true,
+  tags: true,
+  groupItemTitle: true,
+  sportsMarketType: true,
+  acceptingOrders: true,
+  umaResolutionStatuses: true,
+  // Prose, ~1.6 KB per market and 1,619 markets to a page — the single
+  // heaviest field in the payload. Read only by MarketRules/MarketFaq on
+  // /market/[slug], which is served by getCachedEventBySlug, not this cache.
+  description: false,
+  resolutionSource: false,
+};
+
+/** Event-level fields. Everything is kept — the weight is all in `markets`. */
+const LIST_EVENT_FIELDS: Record<keyof GammaEvent, boolean> = {
+  id: true,
+  slug: true,
+  title: true,
+  description: true,
+  image: true,
+  icon: true,
+  startDate: true,
+  endDate: true,
+  active: true,
+  closed: true,
+  archived: true,
+  featured: true,
+  liquidity: true,
+  volume: true,
+  category: true,
+  resolutionSource: true,
+  tags: true,
+  markets: true,
+};
+
+const keptKeys = (fields: Record<string, boolean>) =>
+  new Set(Object.keys(fields).filter((key) => fields[key]));
+
+const KEPT_MARKET_KEYS = keptKeys(LIST_MARKET_FIELDS);
+const KEPT_EVENT_KEYS = keptKeys(LIST_EVENT_FIELDS);
+
+const pick = <T extends object>(source: T, keep: Set<string>): T =>
+  Object.fromEntries(Object.entries(source).filter(([key]) => keep.has(key))) as T;
+
+/**
+ * Narrows one event to the browse shape. Called **inside** the `"use cache"`
+ * functions so the trimmed object is what gets written to R2 — projecting
+ * after the cache boundary would save the render nothing.
+ *
+ * Exported for `gamma.test.ts`: a dropped field shows up as missing content on
+ * a card rather than as an error, so this is pinned directly rather than
+ * inferred from a route test.
+ */
+export function projectEventForList(event: GammaEvent): GammaEvent {
+  const projected = pick(event, KEPT_EVENT_KEYS);
+  projected.markets = (event.markets ?? []).map((market) => pick(market, KEPT_MARKET_KEYS));
+  return projected;
+}
+
 export type CachedSearchResult =
   | { ok: true; generatedAt: string; items: GammaEvent[]; page: number; hasMore: boolean; totalResults: number }
   | { ok: false; error: string; status: number };
@@ -173,16 +278,21 @@ export type CachedSearchResult =
  *
  * The query is part of the cache key, so this trades an unbounded key space
  * for repeat-search hits. That's the right way round: popular queries are
- * exactly what a cache should absorb, and the entries expire in five minutes.
+ * exactly what a cache should absorb.
  */
 export async function getCachedSearch(params: SearchEventsParams): Promise<CachedSearchResult> {
   "use cache";
-  cacheLife({ stale: 30, revalidate: 60, expire: 300 });
+  cacheLife({ stale: 30, revalidate: 60, expire: 1800 });
   cacheTag("gamma:search");
 
   try {
     const page = await searchEvents(params);
-    return { ok: true, generatedAt: new Date().toISOString(), ...page };
+    return {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      ...page,
+      items: page.items.map(projectEventForList),
+    };
   } catch (error) {
     if (error instanceof GammaApiError) {
       return { ok: false, error: error.message, status: error.status };
@@ -257,7 +367,18 @@ export type CachedEventsResult =
 
 export async function getCachedEvents(params: ListEventsParams = {}): Promise<CachedEventsResult> {
   "use cache";
-  cacheLife({ stale: 30, revalidate: 60, expire: 300 });
+  // `expire` raised 300 -> 1800 on 2026-08-23. Past `expire` an entry is GONE
+  // and the next visitor blocks on a live refetch — which at this traffic
+  // level (bursty, with long gaps between sessions) was most of them, and is
+  // what produced the quiet-hour 504 bursts. `stale`/`revalidate` are
+  // unchanged, so content still refreshes every 60s under traffic; the only
+  // difference is that a cold gap now serves stale instead of blocking.
+  //
+  // Trade-off: during an upstream outage a browse card can show a 30-minute-old
+  // price. Acceptable because nothing trades against these numbers — the order
+  // book and trading panel read live CLOB data in the browser. Note
+  // getCachedEventBySlug deliberately stays at 300 for exactly that reason.
+  cacheLife({ stale: 30, revalidate: 60, expire: 1800 });
   cacheTag("gamma:events");
 
   // Errors are caught and returned as plain data, not thrown. Discovered
@@ -273,7 +394,12 @@ export async function getCachedEvents(params: ListEventsParams = {}): Promise<Ca
   // swallowed here.
   try {
     const page = await listEvents(params);
-    return { ok: true, generatedAt: new Date().toISOString(), ...page };
+    return {
+      ok: true,
+      generatedAt: new Date().toISOString(),
+      ...page,
+      items: page.items.map(projectEventForList),
+    };
   } catch (error) {
     if (error instanceof GammaApiError) {
       return { ok: false, error: error.message, status: error.status };

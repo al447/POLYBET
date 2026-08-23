@@ -7,6 +7,7 @@ import {
   listMarkets,
   listTags,
   parseGammaJsonArray,
+  projectEventForList,
   searchEvents,
 } from "./gamma";
 
@@ -374,5 +375,114 @@ describe("parseGammaJsonArray", () => {
     expect(parseGammaJsonArray(null)).toEqual([]);
     expect(parseGammaJsonArray("not json")).toEqual([]);
     expect(parseGammaJsonArray('{"not":"an array"}')).toEqual([]);
+  });
+});
+
+/**
+ * 🚩 The browse-cache projection. Measured 2026-08-23: one live `/api/markets`
+ * response was **6.80 MB** for 50 events / 1,619 nested markets, and that
+ * payload — not the upstream fetch — is what pinned the homepage at its 8s
+ * hero ceiling (Gamma answered in 0.07-0.55s; our cached layer took 1.46-3.56s
+ * for the same data).
+ *
+ * These assert both halves of the contract: everything a card renders survives,
+ * and the weight does not. A regression here is invisible at runtime — a
+ * dropped field is missing content, never an error.
+ */
+describe("projectEventForList", () => {
+  /** Shaped like a real Gamma market: declared fields plus undeclared noise. */
+  const rawMarket = {
+    id: "253591",
+    conditionId: "0xabc123",
+    slug: "will-x-happen",
+    question: "Will X happen?",
+    outcomes: '["Yes","No"]',
+    outcomePrices: '["0.62","0.38"]',
+    clobTokenIds: '["111","222"]',
+    volume: "125000.5",
+    volumeNum: 125000.5,
+    liquidity: "42000",
+    active: true,
+    closed: false,
+    endDate: "2026-12-31T00:00:00Z",
+    groupItemTitle: "X",
+    description: "Long resolution prose that only the detail page ever shows.",
+    resolutionSource: "https://example.com",
+    // Undeclared in GammaMarket — 59 such keys ship on every real market.
+    clobRewards: [{ id: "1", rewardsAmount: 5 }],
+    positionIds: ["0xdead", "0xbeef"],
+    questionID: "0xq",
+    negRiskMarketID: "0xn",
+  };
+
+  const rawEvent = {
+    id: "9001",
+    slug: "some-event",
+    title: "Some Event",
+    description: "Event-level description — kept, the card can show it.",
+    active: true,
+    closed: false,
+    volume: 1000,
+    endDate: "2026-12-31T00:00:00Z",
+    icon: "https://example.com/i.png",
+    markets: [rawMarket],
+    // Undeclared at event level too.
+    seriesSlug: "noise",
+    commentCount: 42,
+  } as unknown as Parameters<typeof projectEventForList>[0];
+
+  it("keeps every field a market card renders", () => {
+    const [market] = projectEventForList(rawEvent).markets;
+
+    // rankEventOutcomes' inputs — without these the outcome list is wrong.
+    expect(market.outcomes).toBe('["Yes","No"]');
+    expect(market.outcomePrices).toBe('["0.62","0.38"]');
+    expect(market.clobTokenIds).toBe('["111","222"]');
+    expect(market.groupItemTitle).toBe("X");
+    expect(market.closed).toBe(false);
+    expect(market.question).toBe("Will X happen?");
+    // MarketCard's own reads.
+    expect(market.id).toBe("253591");
+    expect(market.conditionId).toBe("0xabc123");
+  });
+
+  it("drops the undeclared keys Gamma sends but nothing can read", () => {
+    const projected = projectEventForList(rawEvent);
+    const [market] = projected.markets;
+
+    expect(market).not.toHaveProperty("clobRewards");
+    expect(market).not.toHaveProperty("positionIds");
+    expect(market).not.toHaveProperty("questionID");
+    expect(market).not.toHaveProperty("negRiskMarketID");
+    expect(projected).not.toHaveProperty("seriesSlug");
+    expect(projected).not.toHaveProperty("commentCount");
+  });
+
+  /**
+   * The single heaviest field in the payload, ~1.6 KB x 1,619 markets. Read
+   * only by MarketRules/MarketFaq on /market/[slug], which is served by
+   * getCachedEventBySlug — a different cache, deliberately not projected.
+   */
+  it("drops prose from NESTED markets but keeps it on the event", () => {
+    const projected = projectEventForList(rawEvent);
+
+    expect(projected.markets[0]).not.toHaveProperty("description");
+    expect(projected.markets[0]).not.toHaveProperty("resolutionSource");
+    expect(projected.description).toBe("Event-level description — kept, the card can show it.");
+  });
+
+  it("survives an event with no markets array", () => {
+    const bare = { id: "1", slug: "s", title: "t", active: true, closed: false } as Parameters<
+      typeof projectEventForList
+    >[0];
+
+    expect(projectEventForList(bare).markets).toEqual([]);
+  });
+
+  it("measurably shrinks the payload", () => {
+    const before = JSON.stringify(rawEvent).length;
+    const after = JSON.stringify(projectEventForList(rawEvent)).length;
+
+    expect(after).toBeLessThan(before);
   });
 });

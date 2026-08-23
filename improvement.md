@@ -1,6 +1,6 @@
 # Performance & 504 Remediation
 
-> **Status:** Deploy 1 ✅ typecheck/test/lint clean, preview OK · Deploy 2 written, untested · Deploys 3–4 pending · **Last updated:** 2026-08-23 · **Branch:** `feat/504-fix`
+> **Status:** Deploys 1, 2, 4 ✅ shipped `c11700d` · Deploy 3 written + preview-verified, **not yet deployed** · **Last updated:** 2026-08-23 · **Branch:** `feat/504-fix`
 >
 > Working record of the 504 investigation and the fixes for it. Read [Diagnosis](#diagnosis) before changing anything here — three plausible-sounding causes were ruled out with evidence, and re-proposing them wastes a deploy.
 >
@@ -301,7 +301,7 @@ export default defineCloudflareConfig({
 
 ⚠️ Do **not** enable `bypassTagCacheOnCacheHit`. It defaults to `false` on Next 16 and is incompatible with SWR-style revalidation.
 
-### Deploy 3 — Cache lifetime and shape
+### Deploy 3 — Cache lifetime and shape — ✍️ written, preview-verified
 
 **3a — Let stale entries survive.** `src/lib/polymarket/gamma.ts`
 
@@ -317,11 +317,36 @@ export default defineCloudflareConfig({
 
 **3b — Shrink what goes into the cache.** `src/lib/polymarket/gamma.ts`
 
-The bucket holds **330 objects / 349 MB — ~1 MB per entry**. The cache stores raw Gamma responses: full event objects, every nested market, every field. The cards use a fraction. Project to a narrow shape **before** returning from the `"use cache"` function.
+🚩 **This turned out to be the biggest remaining lever, not the smallest.** It was ranked last here; the measurement moved it to first.
 
-Cuts R2 transfer *and* the JSON parse per render, and compounds with Deploy 2 — smaller entries make the regional Cache API far more effective.
+Measured on the deployed site 2026-08-23, *after* Deploys 1, 2 and 4 were live and the homepage was still pinned at its 8s hero ceiling on 11 of 12 requests:
 
-⚠️ **Highest-care change in this document.** A dropped field shows as *missing content*, not an error. Type the projected shape explicitly so the compiler catches omissions.
+| | |
+|---|---|
+| Gamma direct, same query | **0.07–0.55s** |
+| Our `/api/markets` (same `getCachedEvents`) | **1.46–3.56s** |
+| One response payload | **6.80 MB** |
+| Events / nested markets in it | 50 / **1,619** |
+| Heaviest single event | 584 KB — 123 nested markets, `markets` = 99% of it |
+| Keys per market Gamma sends | **88** |
+| Keys per market `GammaMarket` declares | **29** |
+
+The earlier estimate in this section — "~1 MB per entry" — was **off by nearly 7×**, and it is why this was mis-ranked. Upstream was never slow; the cost is R2 transfer and JSON parse of a payload that is mostly fields nothing can read.
+
+**The 59 undeclared keys are unreadable by any TypeScript consumer**, which is what makes dropping them provable rather than hopeful. Measured projections against the real payload:
+
+| Level | Size | vs before |
+|---|---|---|
+| Raw Gamma | 6.80 MB | 100% |
+| Drop the 59 undeclared keys | 3.51 MB | 52% |
+| **+ drop `description`/`resolutionSource` on nested markets** ← shipped | **1.87 MB** | **28%** |
+| + cap nested markets at 6/event | 0.44 MB | 6% — *not done, changes ranking behaviour* |
+
+Confirmed under `npm run preview`: **6.80 MB → 1.79 MB.**
+
+Those two prose fields are read only by `MarketRules` and `MarketFaq`, both on `/market/[slug]`, which is served by `getCachedEventBySlug` — a different cache, deliberately left at the full shape. `MarketCard` reads only `event.{endDate,icon,markets,slug,title,volume}` and `market.{id,question}`; `rankEventOutcomes` needs `outcomes`, `outcomePrices`, `clobTokenIds`, `groupItemTitle`, `question`, `closed`. All survive, and `gamma.test.ts` asserts each one.
+
+⚠️ **Highest-care change in this document.** A dropped field shows as *missing content*, not an error — so the guard is the compiler, not review. `LIST_MARKET_FIELDS` is typed `Record<keyof GammaMarket, boolean>`: **adding a field to `GammaMarket` without deciding keep-or-drop is a build failure.** Do not loosen that to `Partial<>` or a bare array.
 
 ### Explicitly not doing
 
