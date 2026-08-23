@@ -1,10 +1,14 @@
 # Performance & 504 Remediation
 
-> **Status:** Deploys 1, 2, 4 ✅ shipped `c11700d` · Deploy 3 written + preview-verified, **not yet deployed** · **Last updated:** 2026-08-23 · **Branch:** `feat/504-fix`
+> **Status:** ✅ **Resolved 2026-08-23** — Deploys 1–7 all shipped. `/` went from **18 of 20 requests hanging** to 6/6 at 1.1–2.1s; `/market/*` from the largest 504 source to 12/12 at 0.74–1.31s *immediately after a deploy*. · **Last updated:** 2026-08-23 · **Branch:** `feat/504-fix-2` (`b37fe70`)
 >
-> Working record of the 504 investigation and the fixes for it. Read [Diagnosis](#diagnosis) before changing anything here — three plausible-sounding causes were ruled out with evidence, and re-proposing them wastes a deploy.
+> Working record of the 504 investigation and the fixes for it.
 >
-> **⚠️ Deploy naming changed 2026-08-23.** The old A/B/C labels were ambiguous — "Deploy A" referred both to the shipped commit `10e0a4d` *and* to the uncommitted hero ceiling. They are now numbered 1–4 in [Remaining work](#remaining-work), reordered by measured impact. `10e0a4d` is simply "the 22 Aug deploy".
+> **🚩 Read [How to read a 504 report](#how-to-read-a-504-report) FIRST.** Three separate external analyses recommended the same three fixes — add fetch timeouts, add caching, batch the subrequests — and all three were already done or measurably false every time. That misreading cost three rounds.
+>
+> **⚠️ The afternoon of 2026-08-23 invalidated much of the original diagnosis.** The "slot-time, not slowness" mechanism below explains the *morning*, not what followed. Where an older section conflicts with [Phase 2](#phase-2--the-real-remaining-causes-2026-08-23-afternoon), Phase 2 wins — the earlier text is kept because the reasoning is still instructive, not because it is still true.
+>
+> **Deploy naming.** 1–4 were the original plan. 5–7 were added during Phase 2. `10e0a4d` is "the 22 Aug deploy".
 
 ---
 
@@ -69,6 +73,13 @@ So the chain is: a slow render holds a Worker isolate for tens of seconds → co
 
 **The metric that matters is slot-time held per request, not average latency.** Fixes are therefore ranked by how much wall-clock a request stops occupying, which is why the fixtures loop ([Trap 7](#trap-7--a-per-call-budget-is-not-a-per-loop-budget)) outranks anything on the homepage despite causing fewer 504s.
 
+> ⚠️ **Superseded 2026-08-23 afternoon — see [Phase 2](#phase-2--the-real-remaining-causes-2026-08-23-afternoon).**
+> This mechanism was real for the morning's data and is no longer what produces 504s here.
+> Two later mechanisms replaced it, and both are route-specific rather than site-wide: an
+> unbounded Suspense boundary holding one response open ([Trap 9](#trap-9--a-settimeout-ceiling-cannot-be-trusted-to-fire-in-a-starved-isolate)),
+> and the post-deploy cache stampede ([Trap 8](#trap-8--every-deploy-orphans-the-entire-r2-cache)).
+> The ranking-by-slot-time argument stands; the diagnosis it was applied to does not.
+
 ⚠️ **An earlier pass concluded the opposite** — that failures peak in the *quietest* hours — from `clientDisconnected` counts alone. That population is only 113 of ~761 and is not representative. The quiet-hour effect is real but is the *post-fix residue* (the 05:00 burst, 34 errors, during an hour with just 44 successful requests): entries expire at `expire: 300` and the next visitor pays a cold render. Both mechanisms exist; the busy-hour one dominated the 761 and is largely fixed.
 
 ### 🚩 There is no origin server — ignore origin-shaped advice
@@ -86,6 +97,13 @@ Also note: the 100s timeout is **not** a Free-plan property, as that agent state
 `/terms` timed out **19 times**. It makes no Gamma, CLOB or Privy call, and it builds as `○ (Static)` — prerendered HTML.
 
 **A prerendered static page cannot be slow to render.** For it to exceed 100 seconds, the time was spent *queueing*, not rendering. No upstream provider can explain a `/terms` 504, which rules out the entire "slow external API" family of causes.
+
+> ⚠️ **This argument was still sound and stopped being applicable on 2026-08-23.** By the
+> afternoon `/terms` measured **0.49–0.58s on every sample** while `/` hung on 18 of 20 — so
+> the same page that proved queueing in the morning disproved it later the same day. The
+> lesson generalises: `/terms` is the control variable for this app. If it is fast, the fault
+> is in a specific route, not in isolate contention. Re-measure it before reusing any
+> reasoning in this section.
 
 ### Actual causes, in the order they were found
 
@@ -207,7 +225,9 @@ WAF rule + the 22 Aug deploy (`10e0a4d`), both live:
 
 Bundle went **down** 59.5 KiB gzip (5320.33 → 5260.80).
 
-**The homepage is the one unfixed route.**
+**The homepage is the one unfixed route.** *(True when written, on 2026-08-23 morning. It
+was fixed that afternoon by Deploys 5 and 6 — see [Phase 2](#phase-2--the-real-remaining-causes-2026-08-23-afternoon)
+for the mechanism, which was not the one this section predicts.)*
 
 ---
 
@@ -238,6 +258,25 @@ Homepage server-side exposure after the 22 Aug deploy:
 ---
 
 ## Remaining work
+
+> ✅ **All four shipped 2026-08-23.** Deploy 2 was subsequently **reverted** — see
+> [Phase 2](#phase-2--the-real-remaining-causes-2026-08-23-afternoon) and the docstring in
+> `open-next.config.ts`. Deploys 5–7 followed and are recorded in Phase 2. This section is
+> kept as the original reasoning; it is a record, not a to-do list.
+>
+> **What is actually left:**
+> - **Deploy 8 — cache the geo lookup.** `resolveGeoStatus` (`lib/geo/edge.ts`) fetches
+>   `polymarket.com/api/geoblock` on **every** request: 0.30s measured, serial, before any
+>   render, and ~71% of all subrequest volume. An isolate-local `Map` keyed on
+>   `cf-ipcountry` + `cf-region-code` with a 10-minute TTL, caching only when a country is
+>   known so an unknown one still fetches and still fails closed.
+> - **R2 lifecycle rule** — ops only, no deploy. See [Trap 8](#trap-8--every-deploy-orphans-the-entire-r2-cache).
+> - **Zone Analytics: Read** on the `.env.cloudflare` token, so 504 breakdowns stop having to
+>   come from the dashboard.
+>
+> ⚠️ **The rule below was written and then broken the same day.** Deploys 1–4 went out in two
+> deploys, exactly as warned, and the resulting regression took most of an afternoon to
+> unpick. It is a good rule. Follow it.
 
 Four separate deploys, **ship in this order** — 1 → 2 → 3 → 4, verified one at a time. **Do not combine them**: 2 is build config and 3 changes cache semantics; a combined regression is unattributable.
 
@@ -354,6 +393,189 @@ Those two prose fields are read only by `MarketRules` and `MarketFaq`, both on `
 - **`tagCache`** — nothing in the repo calls `revalidateTag`. Machinery with no caller.
 - **A second R2 store as an "API fallback"** — B and C get the same outcome from the bucket already deployed.
 - **Middleware short-circuit / geo caching** — was planned as defence-in-depth against Trap 1, but the WAF rule addresses it at lower risk. Revisit only if new scanner patterns get through.
+
+---
+
+## Phase 2 — the real remaining causes (2026-08-23 afternoon)
+
+Deploys 1–4 all went out in two deploys (`08:34`, `08:59` UTC) rather than one at a time, in
+direct contradiction of the rule stated above them. The combined regression was duly
+unattributable, and unpicking it is most of what follows.
+
+### The measurement that reframed everything
+
+Taken 12:00–12:20 UTC, with Deploys 1–4 live:
+
+| Probe | Result |
+|---|---|
+| `/` — 20 samples | **18 hung to the 90s ceiling**; 2 returned (2.78s, 3.36s) |
+| `/terms`, `/leaderboard`, `/portfolio`, `/market/[slug]`, `/copy-trade`, `/predict-ai` | **0.29–1.56s, every sample** |
+| Gamma direct, every query we make | 0.15–0.80s |
+
+**If isolates were saturated, `/terms` would be slow. It was 0.5s throughout.** So the
+colo-queueing mechanism was no longer the story — the fault was one route, and it was a
+*hang*, not slowness. `/terms` had been the decisive evidence *for* queueing in the morning
+and became the decisive evidence *against* it in the afternoon.
+
+### Deploy 5 — revert Deploy 2, and bound `DiscoverySection` (`a13704c`, 12:42 UTC)
+
+`withRegionalCache` + `memoryQueue` were reverted (reasoning preserved in
+`open-next.config.ts`'s own docstring) and `DiscoverySection` — the last unbounded Suspense
+boundary on `/` — got an 8s ceiling with a client-side fallback.
+
+Result: `/` went from 18-of-20 hanging to **30/30 completing, slowest 4.97s**. Attribution
+came from the HTML: the grid was server-rendered, so the config revert carried it and the
+ceiling never fired.
+
+### Deploy 6 — align the cache key (13:23 UTC)
+
+`/` then settled onto the fallback path permanently — 12/12 at exactly 8.3s / 94,985 bytes.
+The cause was a divergence nobody had noticed:
+
+`DiscoverySection` called `getCachedEvents({limit, order, ascending})` while `/api/markets`
+defaults `active`, `closed` **and** `endDateMin`. Three consequences from one omission:
+
+1. **It owned a cache key nothing else warmed**, so it went stale every revalidate window and
+   each visitor paid the rebuild inline.
+2. **The grid was mostly dead markets.** Measured on that exact query: **21 of 24 events
+   `closed: true`, 17 already ended, 477 of 864 nested markets closed.** Invisible because
+   `MarketGrid` refetches with the filters and paints over the first render.
+3. **The cursor was mismatched** — minted without those params, replayed by `MarketGrid` with
+   them.
+
+Fixed by passing all three, plus `revalidate` 60 → 300 on the browse caches (with no queue,
+rebuilds are back inside the visitor's request, so making them rarer matters).
+
+Result: **12/12 at 1.16–1.42s server-rendered**, and `closed: 0 | ended: 0`.
+
+### Deploy 7 — `/market/[slug]` (`b37fe70`, 14:15 UTC)
+
+The last route with no ceiling: the event fetch was awaited outside every Suspense boundary,
+so a slow rebuild held the whole page to the 100s edge timeout. Three changes:
+
+- **A ceiling** via `withBudget`, with a third outcome distinct from "errored" and "missing".
+- **`projectEventForDetail`** — the detail cache was the only one still storing Gamma's raw
+  87-key shape. Keeps all 29 declared keys (including the prose `MarketRules`/`MarketFaq`
+  read), drops the 58 nothing can read.
+- **`pickKeys`** replaced `Object.entries → filter → Object.fromEntries`, which had been
+  rebuilding ~137,000 key-value pairs per browse refresh to keep 24 of them.
+
+| `/market/what-price-will-bitcoin-hit-before-2027` | Before | After |
+|---|---|---|
+| Response time | 2.09s | **0.74–1.31s** (12/12) |
+| Payload | 328,363 B | **239,288 B** (−27%) |
+| 504s in the 13:24–13:50 window | 8 | — |
+
+Bundle went **down** 5262.86 → 5255.50 KiB gzip.
+
+---
+
+## How to read a 504 report
+
+Three external analyses of this app's 504s all reached the same wrong conclusion. Before
+acting on a fourth:
+
+**1. Check what "since the last deployment" means.** One report was windowed from
+`08:59:34Z` when the live version was from `13:23:58Z` — it was counting a fixed period as
+if it were the current state. Always confirm against `npx wrangler deployments list`.
+
+**2. A window that starts at a deploy will always look terrible.** See [Trap 8](#trap-8--every-deploy-orphans-the-entire-r2-cache).
+Window from at least 15 minutes after.
+
+**3. Check the claim against a live probe before believing it.** "Systemic across all
+routes" was disproved in 30 seconds by curling six of them. "18+ sequential fetches" was
+1.41 subrequests per request. "Slow upstream API" was Gamma at 0.15s.
+
+**4. These three are already done. Do not re-propose them:**
+
+| Recommendation | Reality |
+|---|---|
+| Add `AbortSignal.timeout()` to fetches | All five have had one since before this work: `gamma.ts` 6s, `price-history.ts` 6s, `leaderboard.ts` 6s, `market-social.ts` 6s, `geo/edge.ts` 2.5s |
+| Cache API responses / serve stale | The R2 bucket **is** the Next incremental cache. `expire` already serves stale rather than blocking |
+| Batch/reduce subrequests | Measured **1.41 per request** |
+
+---
+
+### Trap 8 — Every deploy orphans the entire R2 cache
+
+`getR2Key` in `@opennextjs/cloudflare/dist/api/overrides/incremental-cache/r2-incremental-cache.js`
+composes every key with `buildId: process.env.OPEN_NEXT_BUILD_ID`. **A deploy therefore
+invalidates every cache entry at once**, and with no `queue` configured the first visitor to
+each route pays a full rebuild inside their own request.
+
+Measured: the 26 minutes after the 13:23:58 deploy produced **49 × 504 across 15 paths**,
+13 of them `/market/*`. The same slugs answered in 1.6–2.3s once warm, and six slugs never
+visited before answered in 1.7–2.6s — so neither the warm nor the cold path was broken. They
+were simply the requests that had to build the cache.
+
+Two consequences:
+
+- **A post-deploy 504 burst is expected and self-limiting.** Do not diagnose it as a
+  regression. `scripts/warm-cache.mjs` now runs as part of `npm run deploy` and pays that
+  cost for us — 23 paths in 12.7s, after which the same slug measured 12/12 sub-1.31s.
+- **The bucket accumulates dead entries forever.** 330 objects / 349 MB → **956 / 2.03 GB**,
+  almost all orphaned builds. The only lifecycle rule is the default multipart-abort. Nothing
+  reads an entry past its `expire` (longest 1800s), so a 1-day expiry rule is safe.
+
+⚠️ This also invalidates Verification step 7's prediction that the bucket would *shrink*
+after the projection landed. It grew, because `expire` 300 → 1800 shipped in the same commit.
+
+### Trap 9 — A `setTimeout` ceiling cannot be trusted to fire in a starved isolate
+
+**The single most expensive mistake of this investigation.**
+
+A partial stream capture of `/` showed one boundary resolving to `null` and was read as
+"`FeaturedHero`'s 8s ceiling fired, so the hero is fine — `DiscoverySection` is the hang."
+That was wrong. The `null` was **`GeoBanner`**, which is first in document order and returns
+`null` for an allowed region. `FeaturedHero` had *not* resolved within 25 seconds — despite a
+correctly-written `Promise.race` against `setTimeout(8000)`.
+
+Timers only run when the isolate gets to execute them. Under 16 concurrent multi-megabyte
+`JSON.stringify` + `cache.put` operations in a 128 MB isolate, the timer queues behind the
+very work it is meant to bound. The CPU P99 of 1,576 ms was the same signal read from
+outside.
+
+**So a ceiling is insurance, not a fix.** It bounds work that is *waiting*; it cannot bound
+work that is *burning CPU*. Fix the cause and keep the ceiling for the tail — never the
+other way round.
+
+⚠️ Corollary for reading stream captures: `$RC("B:0","S:0")` identifies the boundary by
+*document order*, not by which component you were thinking about. Count the boundaries in
+`page.tsx` before attributing one.
+
+### Trap 10 — `notFound()` cannot set a 404 from inside a Suspense boundary
+
+Hit and reverted within the hour on 2026-08-23, while trying to make `/market/[slug]` render
+its shell before its data.
+
+Moving the event fetch into a `<Suspense>` child means the response is
+`Transfer-Encoding: chunked` and **the status line is flushed with the shell**. A
+`notFound()` that resolves afterwards renders the correct 404 *UI* under an HTTP **200**:
+
+```
+status=200 bytes=34849
+  4  404
+  2  could not be found
+```
+
+That is worse than it looks here: this site is actively probed by scanners ([Trap 1](#trap-1--scanner-probes-made-the-app-call-polymarket)),
+and answering 200 to every `/market/<garbage>` is a real regression.
+
+**Anything that determines the HTTP status must complete before the first byte.** The fetch
+stays in the page function, bounded by `withBudget`. The bound is what fixes the 504; the
+Suspense split was a first-paint nicety that cost correctness.
+
+### Trap 11 — A Server Component and its API route can silently diverge
+
+`DiscoverySection` and `/api/markets` call the same `getCachedEvents` with *different*
+params, so they never shared a cache entry and never returned the same data — the server
+render was 21-of-24 closed events. Nobody saw it because the client refetched with the right
+filters and painted over it within a second.
+
+Two smells worth grepping for: a Server Component and a route handler calling one cached
+function with hand-written argument lists, and defaults living in the route
+(`?? true` / `?? false`) rather than in the shared function. If the first paint and the first
+refetch disagree, the bug is invisible by construction.
 
 ---
 

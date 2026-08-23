@@ -158,7 +158,28 @@ npm run deploy
 # 4. Verify the deployment (§5)
 ```
 
-`npm run deploy` = `opennextjs-cloudflare build && opennextjs-cloudflare deploy`.
+`npm run deploy` = `opennextjs-cloudflare build && opennextjs-cloudflare deploy && node scripts/warm-cache.mjs`.
+
+**🚩 Expect a 504 burst for ~30 minutes after any deploy unless the warmup runs.** OpenNext's
+R2 cache keys include `OPEN_NEXT_BUILD_ID`, so **publishing orphans every cache entry at
+once** — and with no `queue` configured (see `open-next.config.ts`), the first visitor to each
+route rebuilds it inside their own request. Measured 2026-08-23: the 26 minutes after a deploy
+produced **49 × 504 across 15 paths**, 13 of them `/market/*`, while the same slugs answered
+in 1.6–2.3s once warm.
+
+`scripts/warm-cache.mjs` is why that no longer happens. It runs as the last step of
+`npm run deploy` and requests `/`, `/leaderboard`, `/predict-ai` plus the top 20 market slugs
+pulled live from Gamma — 23 paths in ~13s. A healthy run ends with `Warmed 23/23`. It
+**cannot fail the deploy**: every path swallows its error and it always exits 0, because a
+cold cache is a slow site, not a broken one.
+
+⚠️ **Do not diagnose the post-deploy window as a regression**, and do not accept a 504 report
+windowed from a deploy timestamp — two external analyses did exactly that and both concluded
+the site was systemically broken when it was not. Window from **at least 15 minutes after**
+the deploy, and confirm the live version with `npx wrangler deployments list` first. Full
+detail in [improvement.md](improvement.md).
+
+If you deploy without the npm script, run `npm run warm` yourself afterwards.
 
 **A healthy build prints:**
 - `▲ Next.js 16.2.12 (Turbopack)` and `- Environments: .env.local`
@@ -322,6 +343,10 @@ Migrating later is expensive: a new profile means a new `bytes32` code, new API 
 | `tsc` errors that make no sense after a config change | Aggressive caching | `rm -rf .next tsconfig.tsbuildinfo` and rebuild |
 | `response.json()` is `unknown` | `cloudflare-env.d.ts` ships workerd runtime types — stricter than the DOM lib's `any` | Correct behaviour. Declare the wire shape and cast; do not widen to `any` |
 | yarn: `Found incompatible module` | Polymarket packages declare `engines.node >= 24`; yarn v1 hard-fails | **npm only.** `npm ci --legacy-peer-deps`. Advisory on Node 22 — npm warns and installs fine |
+| **504 burst in the ~30 min after a deploy** | Cache keys include `OPEN_NEXT_BUILD_ID`, so publishing orphans every entry; first visitor per route rebuilds inline | Expected and self-limiting. `npm run warm` if the deploy's warmup didn't run. **Never window a 504 report from a deploy timestamp** — §3 |
+| A route **hangs** rather than erroring; `%{http_code}` is 200 but the body never completes | A Suspense boundary that never resolves holds the streamed response open past the edge's 100s limit | Every boundary needs a ceiling — `withBudget` in `lib/budget.ts`. ⚠️ A `setTimeout` ceiling will **not** fire in a CPU-starved isolate; fix the cause and keep the ceiling for the tail |
+| A nonexistent page returns **200** with 404 content | `notFound()` inside a `<Suspense>` boundary — status flushes with the shell on a chunked response | Resolve anything that determines HTTP status *before* the first byte. See improvement.md Trap 10 |
+| `ERROR Attempt 1 to write "incremental-cache/…" failed with a retryable error` during deploy | R2 write timeout while populating the cache | Auto-retries and self-heals. Harmless if the run ends `Successfully populated cache with N entries` |
 
 ---
 
@@ -350,3 +375,4 @@ If the Cloudflare account, Worker, or bucket is lost, rebuild in this order:
 | 2026-08-05 | **Correction:** "account left clean (0 scripts)" was imprecise. Verified via dashboard screenshot + `wrangler deployments list` (empty, exit 0) + `GET /workers/scripts` (`result: []`) that an empty **Worker service shell** (`polymarket-integration-platform`, no code, no bindings, no versions, 0 invocations) exists in the newer dashboard even though no script API lists it. Harmless, not billed, is the correct deploy target — see §2.1 |
 | 2026-08-23 | **Verified builder tier application submitted** (§7.1) — emailed `builder@polymarket.com`, awaiting reply. **`POLYBETS.XYZ` confirmed live and serving this Worker**, correcting the 2026-08-09 row below and P-8: DNS is delegated to Cloudflare (`jose.ns`/`nina.ns`), `https://polybets.xyz/` returns 200 with `x-opennext: 1`, and `/api/health` reports `mode: "live"` with all five secrets present, `builder.configured: true`, `feeBps {taker:50, maker:0}`, `problems: []`. ⚠️ **This is not a §5 pass** — it confirms the domain resolves and the app runs in live mode; all 9 post-deploy checks remain unrun. Also measured: our builder code has **zero attributed volume** on `data-api.polymarket.com/v1/builders/volume` across DAY/WEEK/MONTH/ALL, so the mainnet smoke order is now the priority (builder-account-actions.md item 4) |
 | 2026-08-09 | **Client upgraded to Workers Paid; first deploy succeeded** on the default `*.workers.dev` subdomain, populating the previously-empty service shell (§2.1, §7.3). Same day: all six §2.4 secrets pushed (`POLYMARKET_BUILDER_*` ×4, `PRIVY_APP_SECRET`, `POLYGON_RPC_URL` — resolves P-9) and both build-time vars (`NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_POLYMARKET_BUILDER_CODE`) exported before this build, so the deployment should be config-complete for live mode. Still outstanding: custom domain not wired (§2.6) — still on `*.workers.dev`, not `POLYBETS.XYZ`; and all 9 of §5's post-deploy verification checks are unrun against this deployment. Do not treat this as a verified-live production deploy until §5 passes |
+| 2026-08-23 | **504 remediation completed** — full record in [improvement.md](improvement.md). Three deploys this afternoon: reverted `withRegionalCache` + `memoryQueue` and bounded `DiscoverySection` (`a13704c`); aligned `DiscoverySection`'s cache key with `/api/markets` and raised browse `revalidate` 60s → 300s; bounded `/market/[slug]` and projected its cache (`b37fe70`). Measured before → after: `/` **18 of 20 requests hanging at 90s** → **6/6 at 1.08–2.09s** server-rendered; `/market/what-price-will-bitcoin-hit-before-2027` **2.09s / 328 KB** → **0.74–1.31s / 239 KB** across 12 samples taken *immediately after a deploy*. Also fixed a data bug the perf work exposed: the home grid was server-rendering **21 of 24 closed events, 17 already ended**, invisible because `MarketGrid` refetched over it. **§3 gained the post-deploy stampede rule and `scripts/warm-cache.mjs`**, now the last step of `npm run deploy`; §8 gained four rows. ⚠️ Two items left: the geo lookup still fetches `polymarket.com/api/geoblock` on every request (~71% of all subrequests), and the R2 bucket holds **956 objects / 2.03 GB** of orphaned build entries with no lifecycle rule to clear them |
