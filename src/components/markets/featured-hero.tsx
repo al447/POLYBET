@@ -3,6 +3,7 @@ import { endingAfter, rankEventOutcomes } from "@/lib/polymarket/gamma-types";
 import type { GammaEvent, RankedOutcome } from "@/lib/polymarket/gamma-types";
 import { getCachedPriceHistory, priceRange, toSparklinePath } from "@/lib/polymarket/price-history";
 import type { PricePoint } from "@/lib/polymarket/price-history";
+import { withBudget } from "@/lib/budget";
 import { formatEndDate, formatRelativeTime, formatUsd } from "@/lib/format";
 import { FeaturedHeroCarousel } from "@/components/markets/featured-hero-carousel";
 import type { HeroChartSeries, HeroSlide } from "@/components/markets/featured-hero-carousel";
@@ -50,28 +51,18 @@ const CHART_HEIGHT = 190;
  * `4.85 3.18 2.07 1.81 1.83` seconds — and then **120s**, which was only that
  * round because the probe gave up there. In production that is a 504.
  *
- * Note what this is NOT. Every upstream call here is already capped at 6s
- * (`gammaFetch`, `price-history.ts`), and Gamma answers in ~110ms when probed
- * directly, so the fetches are not what runs long. A cold render fans out 16
- * `"use cache"` entries — 1 event list + 5 slides x (2 price histories + 1
- * comments) — and each is a separate R2 read and write, with no `queue`
- * configured so revalidation happens inside the request. The cache layer is
- * the thing without a bound, and it is not one this component can fix.
+ * ✅ Confirmed working the same day. A partial stream capture of `/` while the
+ * page was still hanging shows this boundary resolving to `null` in under a
+ * second — the ceiling fired exactly as designed. What hung was
+ * `DiscoverySection`, which had no ceiling at the time; it has one now.
  *
- * So the ceiling is deliberately on the *whole* operation rather than its
- * parts: it holds no matter which layer misbehaves. 8s is well past a healthy
- * cold render and far under the ~100s edge timeout.
+ * Rationale for a whole-operation bound rather than per-call ones lives on
+ * `withBudget` in `lib/budget.ts`, which both boundaries now share.
  */
 const HERO_BUDGET_MS = 8000;
 
 export async function FeaturedHero() {
-  // `Promise.race` leaves the slow branch running — that is intended. Its cache
-  // writes still land, so the render that times out warms the entry for the
-  // next visitor instead of wasting the work.
-  const slides = await Promise.race([
-    buildSlides(),
-    new Promise<null>((resolve) => setTimeout(() => resolve(null), HERO_BUDGET_MS)),
-  ]);
+  const slides = await withBudget(buildSlides(), HERO_BUDGET_MS);
 
   if (!slides || slides.length === 0) return null;
 

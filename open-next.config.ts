@@ -1,45 +1,47 @@
 import { defineCloudflareConfig } from "@opennextjs/cloudflare";
 import r2IncrementalCache from "@opennextjs/cloudflare/overrides/incremental-cache/r2-incremental-cache";
-import { withRegionalCache } from "@opennextjs/cloudflare/overrides/incremental-cache/regional-cache";
-import memoryQueue from "@opennextjs/cloudflare/overrides/queue/memory-queue";
 
 /**
  * OpenNext adapter config — the cache layer behind every `"use cache"` entry.
  *
- * 🚩 Both overrides here exist to stop a request holding a Worker isolate.
- * Cloudflare 504s a request at 100s, and a request that runs long queues every
- * request behind it — which is how `/api/health` and `/terms` ended up timing
- * out on 2026-08-22 despite doing no work of their own. See improvement.md,
- * "The mechanism: slot-time, not slowness".
+ * 🚩 **`withRegionalCache` and `memoryQueue` were here and were REVERTED on
+ * 2026-08-23. Do not re-add them from improvement.md's "Deploy 2" section
+ * without reading this first.**
  *
- * `withRegionalCache` — a cold homepage render issues **16** separate cache
- * entries (1 event list + 5 hero slides x [2 price histories + 1 comments]).
- * With the bare R2 store each of those is a network round trip out of the
- * colo. Wrapping it in the Cache API keeps repeat reads data-centre-local.
+ * They shipped in `c11700d` and the homepage stopped completing. Measured the
+ * same day, 17 anonymous requests to `https://polybets.xyz/`: **one** returned
+ * (2.8s, 1,172,270 bytes) and **sixteen** flushed the static shell in ~0.03s,
+ * stopped at 52,500 bytes, and never sent another byte. The captured partial
+ * body ends at `$RC("B:0","S:0")` — the first Suspense boundary resolving —
+ * with `FeaturedHero`, `DiscoverySection` and `RightSidebar` never arriving.
  *
- * ⚠️ The adapter's own docstring says the regional cache "does not directly
- * improve performance much" and that the real win is bypassing the tag cache.
- * **That caveat does not apply here** — we configure no `tagCache`, so there is
- * nothing to bypass; the entire gain is the avoided R2 round trips, which is
- * exactly this app's problem. Do not let the doc talk you out of this.
+ * It was homepage-only. Every other route measured healthy in the same session,
+ * including `/api/markets` at 2.55s for 1.8 MB — which calls the *same*
+ * `getCachedEvents`. So Gamma and the cached fetch were never the fault; what
+ * is unique to `/` is that one render fans out **16 cache entries** (1 event
+ * list + 5 hero slides x [2 price histories + 1 comments]).
  *
- * `memoryQueue` — without a queue, ISR revalidation runs *inside* the visitor's
- * request, so whoever arrives on a stale entry pays for refreshing it. The
- * queue moves that off the request path. It needs no new binding and no
- * Durable Object migration: `WORKER_SELF_REFERENCE` is already in
- * wrangler.jsonc, which is the only thing it requires.
+ * The suspected mechanism, from the adapter's own source: on Next 16
+ * `shouldLazilyUpdateOnCacheHit` defaults to `true`, so **every regional cache
+ * hit schedules a background R2 re-read plus a full `JSON.stringify` and
+ * `cache.put` of the entry** through `ctx.waitUntil`. Sixteen multi-megabyte
+ * entries parsed inline *and* re-read and re-serialised in the background, in a
+ * 128 MB isolate. That also explains why the first request of a batch survived
+ * and the rest did not: the first missed the regional cache and took the
+ * single-pass path.
  *
- * It de-dupes per isolate, so revalidation can run more than once across
- * isolates. Fine at this volume; move to `doQueue` if traffic grows enough
- * that duplicate revalidations start costing real Gamma requests.
+ * ⚠️ **Suspected, not proven.** `c11700d` shipped three changes at once —
+ * this file, the `featured-hero.tsx` ceiling and the `fixtures.ts` loop bound —
+ * in direct contradiction of improvement.md's own rule that they be deployed
+ * one at a time because "a combined regression is unattributable". It duly was.
+ * The other live suspect is the hero's `Promise.race`, which deliberately
+ * abandons ~15 in-flight cache operations on timeout.
+ *
+ * Before reintroducing either override: land the payload projection in
+ * `gamma.ts` (6.80 MB -> 1.79 MB per entry) first, then add ONE override on its
+ * own, and measure with the 20-request loop in improvement.md's Verification
+ * section. A row reading `size=52500` is this bug returning.
  */
 export default defineCloudflareConfig({
-  // `long-lived` reuses an ISR/`use cache` entry per region for up to 30
-  // minutes. On Next 16 `shouldLazilyUpdateOnCacheHit` defaults to true, so R2
-  // is re-read in the background via waitUntil — refreshed without blocking.
-  //
-  // ⚠️ Do NOT set `bypassTagCacheOnCacheHit`. It defaults to false on Next 16
-  // and is incompatible with SWR-style revalidation, which is what we use.
-  incrementalCache: withRegionalCache(r2IncrementalCache, { mode: "long-lived" }),
-  queue: memoryQueue,
+  incrementalCache: r2IncrementalCache,
 });

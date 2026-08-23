@@ -282,7 +282,9 @@ export type CachedSearchResult =
  */
 export async function getCachedSearch(params: SearchEventsParams): Promise<CachedSearchResult> {
   "use cache";
-  cacheLife({ stale: 30, revalidate: 60, expire: 1800 });
+  // `revalidate` raised 60 -> 300 on 2026-08-23, same reasoning as
+  // `getCachedEvents` below — see the note there.
+  cacheLife({ stale: 30, revalidate: 300, expire: 1800 });
   cacheTag("gamma:search");
 
   try {
@@ -378,7 +380,26 @@ export async function getCachedEvents(params: ListEventsParams = {}): Promise<Ca
   // price. Acceptable because nothing trades against these numbers — the order
   // book and trading panel read live CLOB data in the browser. Note
   // getCachedEventBySlug deliberately stays at 300 for exactly that reason.
-  cacheLife({ stale: 30, revalidate: 60, expire: 1800 });
+  // 🚩 `revalidate` raised 60 -> 300 on 2026-08-23. Read this with the
+  // `expire` note above — they were changed for related but distinct reasons.
+  //
+  // `expire` governs what happens when an entry is GONE. `revalidate` governs
+  // how often a live one is rebuilt, and with no `queue` configured in
+  // open-next.config.ts that rebuild runs **inside a visitor's request**. At 60s
+  // roughly one visitor a minute per cache key paid a full rebuild — Gamma
+  // fetch, multi-megabyte JSON parse, projection, R2 write — and on the home
+  // page that reliably blew through `DISCOVERY_BUDGET_MS`, so every request
+  // fell back to the client-rendered grid. 300s cuts that fivefold.
+  //
+  // Trade-off: a browse card can be up to 5 minutes old on the normal path,
+  // where before it was 1. Same justification as `expire` — nothing trades
+  // against these numbers; the order book and trading panel read live CLOB
+  // data in the browser. `getCachedEventBySlug` deliberately keeps its 60s
+  // because it sits next to the order ticket.
+  //
+  // ⚠️ If `memoryQueue` is ever restored, revisit this: the pressure to keep
+  // rebuilds rare comes from them being on the request path at all.
+  cacheLife({ stale: 30, revalidate: 300, expire: 1800 });
   cacheTag("gamma:events");
 
   // Errors are caught and returned as plain data, not thrown. Discovered

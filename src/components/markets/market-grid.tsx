@@ -89,7 +89,16 @@ export function MarketGrid({
   initialEvents,
   initialCursor,
 }: {
-  initialEvents: GammaEvent[];
+  /**
+   * The server-rendered first page, or `null` when the server ran out of time
+   * building it (see `DISCOVERY_BUDGET_MS` in `discovery-section.tsx`).
+   *
+   * 🚩 `null` and `[]` mean different things and must stay distinguishable.
+   * `[]` is "Gamma returned no events", a finished answer. `null` is "no answer
+   * yet, fetch it yourself" — and the first-render skip below has to be turned
+   * off for it, or the grid renders empty forever.
+   */
+  initialEvents: GammaEvent[] | null;
   initialCursor: string | null;
 }) {
   const router = useRouter();
@@ -119,7 +128,7 @@ export function MarketGrid({
   }, [tagIdParam, sortParam, volumeParam, liquidityParam, endingParam]);
 
   const [results, setResults] = useState<Results>({
-    items: initialEvents,
+    items: initialEvents ?? [],
     cursor: initialCursor,
     page: 1,
     hasMore: initialCursor !== null,
@@ -211,10 +220,16 @@ export function MarketGrid({
   // whatever (possibly empty) results that chip had fetched sitting in state,
   // since nothing told it to reset.
   const isFirstEffectRun = useRef(true);
+  // Captured once at mount rather than read from the prop inside the effect:
+  // the skip is a statement about what the *first* render was handed, and the
+  // effect must not re-decide it later. `null` means the server timed out and
+  // sent nothing, so there is no initial page to be redundant with — that case
+  // has to fetch even though the selection is the default one.
+  const hadServerData = useRef(initialEvents !== null);
   useEffect(() => {
     if (isFirstEffectRun.current) {
       isFirstEffectRun.current = false;
-      if (!isSearching && isServerRenderedSelection(selection)) return;
+      if (hadServerData.current && !isSearching && isServerRenderedSelection(selection)) return;
     }
 
     let cancelled = false;
