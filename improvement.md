@@ -529,6 +529,19 @@ high wall time is the signature of waiting, not computing. The fix that came out
 added this section. **Separate a report's measurements from its conclusions** — the first
 can be sound while the second is unrelated to this codebase.
 
+**Outcome, measured on version `3ca67643` (deployed 2026-08-23T17:00:31Z):**
+
+| Check | Result |
+|---|---|
+| Cliff test — one request at **63 min** after deploy, i.e. just past the new 3600s `expire`, so a genuine expired-entry rebuild | **200 in 2.01s** |
+| 30 samples immediately after | **30/30 x 200**, 0.40–0.67s |
+
+The 8s ceiling never fired. That is the intended state — it is insurance for a slow Gamma,
+not a thing that should engage in normal operation. Note the cold rebuild at 2.01s is close
+to twelve sequential Gamma pages at its measured ~150ms each, which is what a full walk
+*should* cost when Gamma is healthy; the ~16s worst case needs Gamma to be slow, and that is
+precisely the case the ceiling now bounds.
+
 ---
 
 ### Trap 12 — Every stale serve logs a revalidation error, by design
@@ -569,6 +582,22 @@ Two consequences that matter more than the log line:
 composes every key with `buildId: process.env.OPEN_NEXT_BUILD_ID`. **A deploy therefore
 invalidates every cache entry at once**, and with no `queue` configured the first visitor to
 each route pays a full rebuild inside their own request.
+
+⚠️ **Refinement, 2026-08-23 — this overstates it for prerendered routes.** The deploy itself
+repopulates them under the new build id before any traffic arrives:
+
+```
+Populating remote R2 incremental cache...
+Successfully populated cache with 195 entries
+```
+
+So every `○ (Static)` route in the build table — `/predict-ai`, `/copy-trade`, `/portfolio`,
+`/terms` … — starts warm. What still pays inline is the **dynamic** side: `ƒ` routes, and any
+`"use cache"` entry that is not part of a prerender (`/market/<slug>` for slugs outside the
+prerendered set, `/api/markets` responses). `warm-cache.mjs` covers 23 of those.
+*(The burst-size reduction this implies is **not** measured — the 49-across-15-paths figure
+below predates both the repopulation step and the warm script. Do not quote a smaller number
+until someone samples the first 15 minutes after a deploy.)*
 
 Measured: the 26 minutes after the 13:23:58 deploy produced **49 × 504 across 15 paths**,
 13 of them `/market/*`. The same slugs answered in 1.6–2.3s once warm, and six slugs never
