@@ -2,7 +2,7 @@
 
 Operational guide for the Polymarket Integration Platform on Cloudflare Workers.
 
-> **Last updated:** 2026-08-09 · **Target:** Cloudflare Workers via `@opennextjs/cloudflare` · **Status:** **Workers Paid active; first deploy succeeded on `*.workers.dev`, secrets pushed and build-time vars set** (§2.1, §2.4) — custom domain not yet wired (§2.6), §5 post-deploy verification not yet run
+> **Last updated:** 2026-08-23 · **Target:** Cloudflare Workers via `@opennextjs/cloudflare` · **Status:** **Live on `https://polybets.xyz` in live mode** — Workers Paid active, secrets pushed, build-time vars set, custom domain confirmed serving (§2.1, §2.4, §2.6). **Verified builder tier applied for 2026-08-23, awaiting reply (§7.1).** ⚠️ §5 post-deploy verification still not run — the app answering is not the same as the 9 checks passing
 
 **Scope.** [implementation.md](implementation.md) is the one-time build plan; [CLAUDE.md](CLAUDE.md) is working context. **This file is what you open to ship a change, rotate a credential, or work out why production is broken.** If a deploy sends you back to either of the others, that is a gap here — fix it here, while the friction is fresh.
 
@@ -133,6 +133,11 @@ Requires DNS delegated to Cloudflare (zone active). TLS is issued automatically.
 
 `workers_dev: false` matters: two live origins means a canonical-URL problem, a second origin the CSP and Privy allowed-domains must both cover, and a bypass path around anything domain-scoped.
 
+**🚩 Status 2026-08-23: `polybets.xyz` is live and serving this Worker — but NOT through this file.** `wrangler.jsonc` still has **no `routes` block and no `workers_dev: false`**, so the domain was attached through the Cloudflare dashboard (Workers → the service → Custom domains). Two consequences:
+
+- **The repo does not record how production is routed.** Nothing here would tell you the domain exists. A dashboard-attached custom domain survives `npm run deploy`, so this is not urgent — but it is invisible config, and the next person to read `wrangler.jsonc` will conclude we are still on `*.workers.dev`, which is exactly the mistake this note exists to stop.
+- **`workers_dev` is not disabled, so the `*.workers.dev` origin is probably still live** — the two-origin problem above, unverified either way. Check it during the §5 pass, and consider moving the route into `wrangler.jsonc` so the config is reviewable in a commit rather than a dashboard edit.
+
 ---
 
 ## 3. Routine deploy
@@ -243,6 +248,17 @@ Shared across dev, QA, demos and production. **Every Deposit Wallet deployment s
 
 100/day cannot support a public launch. Verified tier (10,000/day) requires emailing `builder@polymarket.com` and takes several business days — it is externally controlled and **gates launch**.
 
+**🟡 Applied 2026-08-23 — awaiting reply.** Sent from `sayemabedin.bd@gmail.com` with the P-2 API key, live URL `https://polybets.xyz`, and a stated $50k–250k/month first-quarter projection. Full record in [builder-account-actions.md](builder-account-actions.md) item 2.
+
+**We are still on 100/day until Polymarket replies — plan around it.** Two things follow while it is pending:
+
+- **Budget the quota.** Each new user's Deposit Wallet deployment spends one, and that is shared with every dev and QA run.
+- **Confirming the upgrade needs volume first.** There is no per-builder profile endpoint (`/v1/builders/<code>` 404s). The `verified` flag only appears on our row of `data-api.polymarket.com/v1/builders/leaderboard`, and we have no row until our code has traded:
+  ```bash
+  curl -s "https://data-api.polymarket.com/v1/builders/leaderboard?timePeriod=ALL" | grep 0x5eb653d0
+  ```
+  Until then Polymarket's reply email is the only confirmation — **keep it**, it is not recoverable from the repo.
+
 ### 7.2 Builder fee changes take ~4 days
 
 Observed 2026-08-04: editing a rate in Settings → Builders showed `Pending: 0.5% (8/8/2026)`.
@@ -332,4 +348,5 @@ If the Cloudflare account, Worker, or bucket is lost, rebuild in this order:
 | 2026-08-04 | Created during Phase 0. Bumped `compatibility_date` 2025-03-25 → 2026-08-01; added CSP + security headers to `next.config.ts` (report-only); generated `cloudflare-env.d.ts`, whose workerd types surfaced 6 real `unknown` type errors now fixed; measured bundle at **4.79 MiB gzipped** (up from 2.90). Verified on local workerd: `/` and `/restricted` 200, all security headers present, `/api/spike/signing` `passed: true` with `runtime: workerd` |
 | 2026-08-05 | **First deploy attempted against the client's Cloudflare account — rejected, account is on Workers Free** (`code: 10027`, §2.1/§7.3). Completed before the block: scoped API token convention (`.env.cloudflare`, §2.1), R2 bucket `polymarket-platform-cache` created (§2.2), full gate green (lint/typecheck/34 tests/build/`check:secrets`), bundle re-measured flat at 4.79 MiB, and all §5 probes passing on local workerd. Corrected **§5 check 4**, which described Polymarket's upstream `country`/`region` shape while pointing at *our* `/api/geoblock` route (returns `countryCode`/`regionCode`); as written it would have led someone to "fix" the correct code and reintroduce the fail-closed bug. Same clarification applied to the §8 row |
 | 2026-08-05 | **Correction:** "account left clean (0 scripts)" was imprecise. Verified via dashboard screenshot + `wrangler deployments list` (empty, exit 0) + `GET /workers/scripts` (`result: []`) that an empty **Worker service shell** (`polymarket-integration-platform`, no code, no bindings, no versions, 0 invocations) exists in the newer dashboard even though no script API lists it. Harmless, not billed, is the correct deploy target — see §2.1 |
+| 2026-08-23 | **Verified builder tier application submitted** (§7.1) — emailed `builder@polymarket.com`, awaiting reply. **`POLYBETS.XYZ` confirmed live and serving this Worker**, correcting the 2026-08-09 row below and P-8: DNS is delegated to Cloudflare (`jose.ns`/`nina.ns`), `https://polybets.xyz/` returns 200 with `x-opennext: 1`, and `/api/health` reports `mode: "live"` with all five secrets present, `builder.configured: true`, `feeBps {taker:50, maker:0}`, `problems: []`. ⚠️ **This is not a §5 pass** — it confirms the domain resolves and the app runs in live mode; all 9 post-deploy checks remain unrun. Also measured: our builder code has **zero attributed volume** on `data-api.polymarket.com/v1/builders/volume` across DAY/WEEK/MONTH/ALL, so the mainnet smoke order is now the priority (builder-account-actions.md item 4) |
 | 2026-08-09 | **Client upgraded to Workers Paid; first deploy succeeded** on the default `*.workers.dev` subdomain, populating the previously-empty service shell (§2.1, §7.3). Same day: all six §2.4 secrets pushed (`POLYMARKET_BUILDER_*` ×4, `PRIVY_APP_SECRET`, `POLYGON_RPC_URL` — resolves P-9) and both build-time vars (`NEXT_PUBLIC_PRIVY_APP_ID`, `NEXT_PUBLIC_POLYMARKET_BUILDER_CODE`) exported before this build, so the deployment should be config-complete for live mode. Still outstanding: custom domain not wired (§2.6) — still on `*.workers.dev`, not `POLYBETS.XYZ`; and all 9 of §5's post-deploy verification checks are unrun against this deployment. Do not treat this as a verified-live production deploy until §5 passes |

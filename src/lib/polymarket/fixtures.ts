@@ -44,6 +44,29 @@ const MAX_PAGES = 12;
 const PAGE_LIMIT = 100;
 
 /**
+ * 🚩 Ceiling on the WHOLE pagination loop, not one page.
+ *
+ * `MAX_PAGES` bounds how many pages we walk; it does not bound how long that
+ * takes. Each `listEvents` is one `gammaFetch`, capped at `TOTAL_BUDGET_MS`
+ * (6s) — so twelve sequential pages is **72 seconds** worst case, in a single
+ * request, before R2, middleware or render get a turn. Cloudflare times a
+ * request out at 100s.
+ *
+ * This is the same lesson as `gammaFetch`'s own budget one level up: bounding
+ * each call is not bounding the loop that makes twelve of them. Diagnosed
+ * 2026-08-23 — `/predict-ai` was the second-worst 504 path on the site.
+ *
+ * Slot-time is the real cost, not just this page. A request that runs 72s
+ * holds a Worker isolate for 72s, and requests queued behind it time out too
+ * — which is why `/api/health` and `/terms` also 504'd during the bursts.
+ *
+ * On expiry we return the fixtures collected so far rather than throwing: a
+ * partial board is strictly better than no page. The deadline is checked
+ * *between* pages, so one in-flight call can overrun it by up to 6s.
+ */
+const FIXTURES_BUDGET_MS = 10_000;
+
+/**
  * Every football fixture kicking off inside the window, soonest first.
  *
  * 🚩 The keyset cursor is bound to the sort that produced it. Replaying a
@@ -65,7 +88,15 @@ export async function fetchFixtures(): Promise<Fixture[]> {
   const seen = new Set<string>();
   let cursor: string | null = null;
 
+  // Computed once, before the loop — the same shape gammaFetch uses for its
+  // own retries. See FIXTURES_BUDGET_MS.
+  const deadline = Date.now() + FIXTURES_BUDGET_MS;
+
   for (let page = 0; page < MAX_PAGES; page += 1) {
+    // Out of time: hand back what we have. `sortFixtures` below still runs, so
+    // a truncated board is ordered correctly rather than half-sorted.
+    if (Date.now() >= deadline) break;
+
     const result = await listEvents({
       cursor: cursor ?? undefined,
       limit: PAGE_LIMIT,

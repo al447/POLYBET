@@ -38,7 +38,47 @@ const CHART_INSET = 6;
 const CHART_WIDTH = 640;
 const CHART_HEIGHT = 190;
 
+/**
+ * 🚩 Hard ceiling on the whole hero. Do not remove without replacing it.
+ *
+ * The docstring above promises the hero degrades to nothing rather than taking
+ * the page down with it — but before 2026-08-23 that only held for *errors*.
+ * On slowness it waited indefinitely, and the homepage waited with it.
+ *
+ * Measured on the deployed Worker that day, after the Gamma budget and the WAF
+ * block were both already live: 6 homepage requests returned
+ * `4.85 3.18 2.07 1.81 1.83` seconds — and then **120s**, which was only that
+ * round because the probe gave up there. In production that is a 504.
+ *
+ * Note what this is NOT. Every upstream call here is already capped at 6s
+ * (`gammaFetch`, `price-history.ts`), and Gamma answers in ~110ms when probed
+ * directly, so the fetches are not what runs long. A cold render fans out 16
+ * `"use cache"` entries — 1 event list + 5 slides x (2 price histories + 1
+ * comments) — and each is a separate R2 read and write, with no `queue`
+ * configured so revalidation happens inside the request. The cache layer is
+ * the thing without a bound, and it is not one this component can fix.
+ *
+ * So the ceiling is deliberately on the *whole* operation rather than its
+ * parts: it holds no matter which layer misbehaves. 8s is well past a healthy
+ * cold render and far under the ~100s edge timeout.
+ */
+const HERO_BUDGET_MS = 8000;
+
 export async function FeaturedHero() {
+  // `Promise.race` leaves the slow branch running — that is intended. Its cache
+  // writes still land, so the render that times out warms the entry for the
+  // next visitor instead of wasting the work.
+  const slides = await Promise.race([
+    buildSlides(),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), HERO_BUDGET_MS)),
+  ]);
+
+  if (!slides || slides.length === 0) return null;
+
+  return <FeaturedHeroCarousel slides={slides} />;
+}
+
+async function buildSlides(): Promise<HeroSlide[] | null> {
   const page = await getCachedEvents({
     featured: true,
     active: true,
@@ -56,13 +96,9 @@ export async function FeaturedHero() {
 
   if (!page.ok || page.items.length === 0) return null;
 
-  const slides = (await Promise.all(page.items.map(buildSlide))).filter(
+  return (await Promise.all(page.items.map(buildSlide))).filter(
     (slide): slide is HeroSlide => slide !== null,
   );
-
-  if (slides.length === 0) return null;
-
-  return <FeaturedHeroCarousel slides={slides} />;
 }
 
 async function buildSlide(event: GammaEvent): Promise<HeroSlide | null> {
