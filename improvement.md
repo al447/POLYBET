@@ -486,13 +486,16 @@ Window from at least 15 minutes after.
 routes" was disproved in 30 seconds by curling six of them. "18+ sequential fetches" was
 1.41 subrequests per request. "Slow upstream API" was Gamma at 0.15s.
 
-**4. These three are already done. Do not re-propose them:**
+**4. These are already done. Do not re-propose them:**
 
 | Recommendation | Reality |
 |---|---|
 | Add `AbortSignal.timeout()` to fetches | All five have had one since before this work: `gamma.ts` 6s, `price-history.ts` 6s, `leaderboard.ts` 6s, `market-social.ts` 6s, `geo/edge.ts` 2.5s |
 | Cache API responses / serve stale | The R2 bucket **is** the Next incremental cache. `expire` already serves stale rather than blocking |
-| Batch/reduce subrequests | Measured **1.41 per request** |
+| Batch/reduce subrequests | Measured **1.41 per request** (2.18 on 2026-08-24) |
+| Hand-roll an R2 stale fallback in a route | Same bucket, and it would write app keys into OpenNext's `getR2Key` keyspace. Note R2's `put()` has **no `expirationTtl`** — that is a KV option, silently ignored here. Added after report #5 |
+| Respect the 6-connection limit | Measured **2.18 subrequests/request**, and `fixtures.ts:95` is a sequential `for` loop with `await` inside. Added after report #5 |
+| Add a post-deploy warmup script | `scripts/warm-cache.mjs` has existed since 2026-08-23 and runs inside `npm run deploy`. ⚠️ Any snippet using `wrangler deploy` **breaks the deploy** — it skips `opennextjs-cloudflare build` and ships a stale `.open-next/`. Added after report #5 |
 
 **5. Check that the report is even about this codebase.** Added after report #4 named a
 Render backend that exists in a *different* project on the same machine. Grep for any host
@@ -501,6 +504,81 @@ it mentions before believing the causal chain built on it.
 **6. Read the report's own numbers against its own headline.** Report #4 asserted a "504
 burst" above a table showing `ok 161, canceled 2, exceededCpu 0, exception 0` and statuses
 `200 x 167`, `0 (canceled) x 2` — **no 5xx at all**.
+
+**7. 🚩 Worker-side telemetry CANNOT falsify a 504 here — do not answer from it.** Added
+2026-08-24 after this file's own author made the mistake. `workersInvocationsAdaptive` showed
+`success 596 / clientDisconnected 24 / exceededCpu 0 / errors 0`, p99 wall **10.74s**, and
+that was read as "zero 504s". It was 135. **Most 504s never produce a Worker invocation at
+all** (see the slot-time section) — they are queued at the colo and time out before dispatch,
+so healthy Worker stats are exactly what this failure looks like. Only zone analytics answers
+this question, and our token still cannot read it. If you only have account-level access, say
+"I cannot measure this" rather than "it is zero".
+
+**8. Check the hourly distribution before believing a rate.** Report #5 computed a
+"7.0% error rate" (135 / 1,917) across a window it started at the deploy instant. Per hour:
+**85 in the deploy hour, 49 in the next, then 1 across the following fourteen.** Windowed
+from 19:00 the rate is ~0.06%. An average over a self-limiting burst describes neither the
+burst nor the steady state.
+
+---
+
+### Report #5 (2026-08-24, Cloudflare agent) — "fetches have no timeout"
+
+Diagnosed 135 504s as *"`fetch()` calls to external APIs (Polymarket, Polygon RPC, Privy)
+**without any timeout**, so the Worker hangs until the edge returns a 504."* Every clause is
+checkable and each one fails:
+
+| Claim | Reality |
+|---|---|
+| Fetches have no timeout | **All five have one.** `gamma.ts:616` via `AbortSignal.timeout`; `market-social.ts:61`, `price-history.ts:85`, `leaderboard.ts:63`, `withdraw.ts:209` via `AbortController` + `setTimeout` |
+| Polygon RPC calls hang | **Zero RPC calls.** `POLYGON_RPC_URL` appears once in all of `src/` — `lib/env.ts:27`, a type declaration never read |
+| Privy hangs `/api/auth/me` | Already capped at `timeout: 8_000, maxRetries: 1` (`lib/auth/privy.ts:50`) |
+| `/predict-ai` calls an AI API | It calls **Gamma**. `getCachedFixtures()` → `listEvents` → `gammaFetch`, bounded by a 10s loop deadline (`fixtures.ts:67,93`) and `withBudget` (`predict-ai/page.tsx:83`) |
+| Serve stale from R2 by hand | Broken three ways — see rule 4's table |
+| Add a post-deploy warmup | Exists, and its snippet would break the deploy — see rule 4's table |
+
+**The clock is what settles it.** 134 of 135 in two hours, then zero for fourteen. A slow
+upstream does not switch itself off at 19:00 and stay off.
+
+⚠️ **The agent later conceded and adopted our counter-hypothesis (that `warm-cache.mjs`
+races deploy propagation). That agreement was not evidence, and the hypothesis was wrong
+too** — see the next section. An external reviewer agreeing with you is worth exactly as
+much as an external reviewer disagreeing with you.
+
+#### 🚩 What actually caused it: warm-cache covers under 1% of the keyspace
+
+The script warmed **7 of the 8 worst-hit market slugs** and they 504'd anyway, so coverage
+was never a matter of listing more paths. Measured 2026-08-24, the browse surface alone
+reaches:
+
+| Dimension | Count | Source (`lib/polymarket/gamma-types.ts`) |
+|---|---|---|
+| Categories (+ "all") | 13 | `TOP_CATEGORIES:46` |
+| Sorts | 5 | `EVENT_SORTS:250` |
+| Range filters (volume × liquidity × ending) | 27 | `:287–302` |
+| HTML + RSC variants | ×2 | measured below |
+| **Total** | **3,510** | before a single market page |
+
+**RSC variants are separate entries and were never warmed.** Against `/` with the HTML entry
+already warm:
+
+```
+GET /            -> 200  4.92s  1,421,279 bytes
+GET / (RSC: 1)   -> 200  7.04s  1,222,951 bytes   <- different entry, cold
+```
+
+Every client-side `<Link>` navigation requests that variant. Fixed 2026-08-24 —
+`warm-cache.mjs` now warms both, path-major.
+
+The mechanism is this file's own slot-time argument: a deploy orphans every key, `/` alone
+fans out **16 cache entries** per render (`open-next.config.ts`), each cold render holds an
+isolate 1–5s, concurrency saturates, and queued requests hit the 100s ceiling. **The proof is
+`/api/auth/me` at 29 of the 135** — uncacheable, unwarmable, capped at 8s. It can only have
+been queueing, exactly as `/terms` was in the original investigation.
+
+⚠️ Cold renders measure *fine* in isolation — `/predict-ai` 0.80s, `/` 4.90s, market pages
+2.24s and 3.79s. Do not conclude from a healthy cold probe that a deploy will be healthy;
+it is cheap-times-everything-at-once that saturates.
 
 ---
 
