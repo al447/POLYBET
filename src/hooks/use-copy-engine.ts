@@ -127,6 +127,14 @@ export function useCopyEngine(): CopyEngine {
   // so two clicks in the same tick would both read `placing` as empty and both
   // sign — one intent, two orders, twice the exposure the user agreed to.
   const placingRef = useRef<Set<string>>(new Set());
+  /**
+   * Aborts the in-flight poll when the engine stops.
+   *
+   * `dataApiFetch` in `trader-feed.ts` was written to compose a caller's signal
+   * with its own 8s timeout, but nothing ever passed one — so a poll that began
+   * just before an unmount ran to completion against a hook nobody was reading.
+   */
+  const abortRef = useRef<AbortController | null>(null);
 
   // Written in an effect, not during render: a ref mutated while rendering is
   // read by whichever pass happens to be in flight, which is exactly the kind
@@ -291,6 +299,12 @@ export function useCopyEngine(): CopyEngine {
     runningRef.current = true;
     setChecking(true);
 
+    // Read once per pass rather than per fetch: the effect below replaces the
+    // controller when the engine restarts, and a pass should be cancelled by
+    // the controller it started under, not by whichever one is current when it
+    // happens to finish.
+    const signal = abortRef.current?.signal;
+
     try {
       const nowMs = Date.now();
       const nowSeconds = Math.floor(nowMs / 1000);
@@ -317,7 +331,16 @@ export function useCopyEngine(): CopyEngine {
           continue;
         }
 
-        const trades = await fetchTraderTrades(followed.address);
+        const trades = await fetchTraderTrades(followed.address, { signal });
+
+        // Bail before using the result, never after: an aborted fetch returns
+        // an **empty array**, indistinguishable from "this trader did nothing".
+        // The cursor is safe either way — `selectCopyableIntents` only ever
+        // advances it to an intent it actually returned — but the SELL branch
+        // below is not, so the loop must not continue past an abort. Every
+        // commit happens below the loop, so returning here writes nothing.
+        if (signal?.aborted) return;
+
         const { intents, nextCursor } = selectCopyableIntents({
           trades,
           cursor: followed.cursor,
@@ -336,8 +359,20 @@ export function useCopyEngine(): CopyEngine {
           if (intent.side === "SELL") {
             if (!ourShares) ourShares = await readOurShares(clientRef.current);
             if (!theirSizes.has(followed.address)) {
-              theirSizes.set(followed.address, await fetchTraderPositionSizes(followed.address));
+              theirSizes.set(
+                followed.address,
+                await fetchTraderPositionSizes(followed.address, { signal }),
+              );
             }
+
+            // 🚩 The load-bearing abort check. An aborted `/positions` read
+            // yields an **empty map**, and the line below reads a missing entry
+            // as `null`, which `decideCopy` deliberately answers with a **full
+            // exit**. That is the right default for a genuine outage and the
+            // wrong one for "we walked away mid-request" — without this, closing
+            // the tab could queue a full exit the trader never made.
+            if (signal?.aborted) return;
+
             const theirs = theirSizes.get(followed.address);
             exit = {
               ourShares: ourShares.get(intent.tokenId) ?? 0,
@@ -408,6 +443,11 @@ export function useCopyEngine(): CopyEngine {
   useEffect(() => {
     if (!watching) return;
 
+    // Fresh per run of this effect, so a restart is not cancelled by the
+    // previous run's abort. `runCheck` reads it through `abortRef`.
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     void runCheckRef.current();
 
     const id = setInterval(() => {
@@ -426,6 +466,11 @@ export function useCopyEngine(): CopyEngine {
     return () => {
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
+      controller.abort();
+      // Only clear the shared ref if it is still ours — blanking a newer run's
+      // controller would leave that run's poll unabortable. The abort above is
+      // what actually stops the in-flight pass; this is just tidying.
+      if (abortRef.current === controller) abortRef.current = null;
     };
     // `active.length` deliberately: following the first trader should start a
     // pass immediately rather than waiting out the current interval.

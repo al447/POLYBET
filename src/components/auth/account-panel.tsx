@@ -41,13 +41,23 @@ type MeResponse =
   | { authenticated: false; reason?: string };
 
 /**
+ * Ceiling on `/api/auth/me`. The `catch` below already turns a failure into a
+ * clean "rejected" panel, but without a bound there is nothing to catch — the
+ * panel just sits on `state: "loading"` for the rest of the session.
+ */
+const ME_TIMEOUT_MS = 8000;
+
+/**
  * Asks the server who it thinks we are. Free of setState so it can be called
  * from an effect: React requires state updates to happen in a callback rather
  * than synchronously in an effect body.
  */
 async function loadServerSession(): Promise<ServerSession> {
   try {
-    const response = await fetch("/api/auth/me", { cache: "no-store" });
+    const response = await fetch("/api/auth/me", {
+      cache: "no-store",
+      signal: AbortSignal.timeout(ME_TIMEOUT_MS),
+    });
     const data = (await response.json()) as MeResponse;
     return data.authenticated
       ? {
@@ -56,8 +66,12 @@ async function loadServerSession(): Promise<ServerSession> {
           email: data.user.email,
         }
       : { state: "rejected", reason: data.reason ?? "unknown" };
-  } catch {
-    return { state: "rejected", reason: "network_error" };
+  } catch (err) {
+    // Kept distinct from a genuine network failure: this reason is rendered in
+    // the panel's diagnostic line, and "the Worker didn't answer" and "the
+    // request never left" point at different things.
+    const timedOut = err instanceof DOMException && err.name === "TimeoutError";
+    return { state: "rejected", reason: timedOut ? "timeout" : "network_error" };
   }
 }
 

@@ -10,6 +10,16 @@ import { ACCEPTANCE_VERSION, LEGAL_DOCUMENTS } from "@/lib/legal/documents";
 import { needsAcceptance, readAcceptance } from "@/lib/legal/acceptance";
 
 /**
+ * Ceiling on the `/api/legal/accept` write.
+ *
+ * Without it a hung Worker leaves the button spinning forever: `submitting`
+ * never clears, so the user can neither retry nor reach the app, and the gate
+ * is by design the only way past. A timeout turns that into an ordinary
+ * retryable error — every step in `accept()` is idempotent.
+ */
+const ACCEPT_TIMEOUT_MS = 8000;
+
+/**
  * Blocking acceptance step for the legal documents (FR-6.4).
  *
  * Sits between login and the app: a signed-in user who has not accepted the
@@ -66,6 +76,7 @@ function PrivyAcceptanceGate({ children }: { children: ReactNode }) {
       const response = await fetch("/api/legal/accept", {
         method: "POST",
         credentials: "same-origin",
+        signal: AbortSignal.timeout(ACCEPT_TIMEOUT_MS),
       });
       if (!response.ok) {
         const body = (await response.json().catch(() => null)) as { message?: string } | null;
@@ -101,7 +112,17 @@ function PrivyAcceptanceGate({ children }: { children: ReactNode }) {
       // user having propagated into `usePrivy()`'s cache this render.
       setAccepted(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't record your acceptance.");
+      // `DOMException` does inherit from `Error`, so a bare `err.message` here
+      // would show the browser's own wording ("The operation was aborted due to
+      // timeout"). Say what the user should do instead.
+      const timedOut = err instanceof DOMException && err.name === "TimeoutError";
+      setError(
+        timedOut
+          ? "That took too long. Please try again."
+          : err instanceof Error
+            ? err.message
+            : "Couldn't record your acceptance.",
+      );
     } finally {
       setSubmitting(false);
     }

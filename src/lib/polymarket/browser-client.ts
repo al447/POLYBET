@@ -423,6 +423,9 @@ export type PreflightResult =
   | { allowed: true; feeBps: { taker: number; maker: number } }
   | { allowed: false; reason: string; message: string };
 
+/** See the fail-closed note on `preflightOrder`. */
+const PREFLIGHT_TIMEOUT_MS = 10_000;
+
 /**
  * Server-side pre-trade check (FR-3.5, FR-6).
  *
@@ -433,6 +436,13 @@ export type PreflightResult =
  * gate was never our only control: **Polymarket enforces jurisdiction
  * server-side regardless.** Ours exists so users get real feedback rather than
  * an opaque upstream rejection.
+ *
+ * ⚠️ **A timeout here fails closed** — it returns `allowed: false`, so the
+ * wallet is never prompted. That is the only safe reading: this call is what
+ * discloses the fee the user is about to pay, and "we could not reach the
+ * server" says nothing about whether the order is permitted. 10s rather than
+ * the 8s used on browse routes because a false timeout on the trading path
+ * costs the user a fill, not a page of cards.
  */
 export async function preflightOrder(body: {
   tokenId: string;
@@ -441,12 +451,26 @@ export async function preflightOrder(body: {
   maxSpend?: string;
   limitPrice?: string;
 }): Promise<PreflightResult> {
-  const response = await fetch("/api/orders", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = (await response.json()) as PreflightResponse;
+  let response: Response;
+  let data: PreflightResponse;
+  try {
+    response = await fetch("/api/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(PREFLIGHT_TIMEOUT_MS),
+    });
+    data = (await response.json()) as PreflightResponse;
+  } catch (err) {
+    const timedOut = err instanceof DOMException && err.name === "TimeoutError";
+    return {
+      allowed: false,
+      reason: timedOut ? "preflight_timeout" : "preflight_unreachable",
+      message: timedOut
+        ? "Couldn't confirm the order in time. Please try again."
+        : "Couldn't reach the server to check this order. Please try again.",
+    };
+  }
 
   if (!response.ok) {
     return {

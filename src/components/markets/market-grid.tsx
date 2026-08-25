@@ -24,6 +24,15 @@ import type {
   VolumeFilterId,
 } from "@/lib/polymarket/gamma-types";
 
+/**
+ * Ceiling on a call to our own `/api/markets*` routes.
+ *
+ * 8s rather than something tighter because those routes sit above `gammaFetch`,
+ * whose own deadline is 6s — a shorter bound here would report a generic timeout
+ * for a request that was a beat away from returning Gamma's real error message.
+ */
+const REQUEST_TIMEOUT_MS = 8000;
+
 /** Everything that narrows the browse grid. Any change invalidates the cursor. */
 type GridSelection = {
   tagId: number | null;
@@ -135,7 +144,17 @@ export function MarketGrid({
     totalResults: null,
   });
   const [loading, setLoading] = useState(false);
+  /**
+   * Two error slots, because the two failures belong in different places.
+   *
+   * `error` is "the grid itself failed" and renders at the top, next to the
+   * chips that triggered it. `pageError` is "Load more failed" and renders at
+   * the button — 🚩 a single slot put it above the card grid, which is a screen
+   * or more out of view from the button the user just pressed, so a failed
+   * pagination looked like a button that did nothing at all.
+   */
   const [error, setError] = useState<string | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
 
   const query = (searchParams.get("q") ?? "").trim();
   const isSearching = query.length > 0;
@@ -150,11 +169,31 @@ export function MarketGrid({
       const next = { ...selection, ...patch };
       const params = new URLSearchParams(searchParams.toString());
 
-      setParam(params, "tagId", next.tagId === null ? null : String(next.tagId));
-      setParam(params, "sort", next.sort === DEFAULT_SORT_ID ? null : next.sort);
-      setParam(params, "volume", next.volume === DEFAULT_FILTER_ID ? null : next.volume);
-      setParam(params, "liquidity", next.liquidity === DEFAULT_FILTER_ID ? null : next.liquidity);
-      setParam(params, "ending", next.ending === DEFAULT_FILTER_ID ? null : next.ending);
+      setParam(
+        params,
+        "tagId",
+        next.tagId === null ? null : String(next.tagId),
+      );
+      setParam(
+        params,
+        "sort",
+        next.sort === DEFAULT_SORT_ID ? null : next.sort,
+      );
+      setParam(
+        params,
+        "volume",
+        next.volume === DEFAULT_FILTER_ID ? null : next.volume,
+      );
+      setParam(
+        params,
+        "liquidity",
+        next.liquidity === DEFAULT_FILTER_ID ? null : next.liquidity,
+      );
+      setParam(
+        params,
+        "ending",
+        next.ending === DEFAULT_FILTER_ID ? null : next.ending,
+      );
 
       // Not named `query` — that's the search term a few lines up.
       const queryString = params.toString();
@@ -166,26 +205,32 @@ export function MarketGrid({
   // 🚩 The whole selection goes on every request, paginated or not. Gamma
   // binds a keyset cursor to the sort that produced it and 422s on a mismatch,
   // so "Load more" has to ask for page 2 under exactly what fetched page 1.
-  const fetchBrowsePage = useCallback(async (current: GridSelection, cursor: string | null) => {
-    const params = new URLSearchParams();
-    params.set("limit", "24");
-    params.set("sort", current.sort);
-    if (current.tagId !== null) params.set("tagId", String(current.tagId));
-    if (current.volume !== DEFAULT_FILTER_ID) params.set("volume", current.volume);
-    if (current.liquidity !== DEFAULT_FILTER_ID) params.set("liquidity", current.liquidity);
-    if (current.ending !== DEFAULT_FILTER_ID) params.set("ending", current.ending);
-    if (cursor) params.set("cursor", cursor);
+  const fetchBrowsePage = useCallback(
+    async (current: GridSelection, cursor: string | null) => {
+      const params = new URLSearchParams();
+      params.set("limit", "24");
+      params.set("sort", current.sort);
+      if (current.tagId !== null) params.set("tagId", String(current.tagId));
+      if (current.volume !== DEFAULT_FILTER_ID)
+        params.set("volume", current.volume);
+      if (current.liquidity !== DEFAULT_FILTER_ID)
+        params.set("liquidity", current.liquidity);
+      if (current.ending !== DEFAULT_FILTER_ID)
+        params.set("ending", current.ending);
+      if (cursor) params.set("cursor", cursor);
 
-    const body = await getJson(`/api/markets?${params.toString()}`);
-    const page = body as { items: GammaEvent[]; nextCursor: string | null };
-    return {
-      items: page.items,
-      cursor: page.nextCursor,
-      page: 1,
-      hasMore: page.nextCursor !== null,
-      totalResults: null,
-    } satisfies Results;
-  }, []);
+      const body = await getJson(`/api/markets?${params.toString()}`);
+      const page = body as { items: GammaEvent[]; nextCursor: string | null };
+      return {
+        items: page.items,
+        cursor: page.nextCursor,
+        page: 1,
+        hasMore: page.nextCursor !== null,
+        totalResults: null,
+      } satisfies Results;
+    },
+    [],
+  );
 
   const fetchSearchPage = useCallback(async (term: string, page: number) => {
     const params = new URLSearchParams({ q: term, page: String(page) });
@@ -229,21 +274,34 @@ export function MarketGrid({
   useEffect(() => {
     if (isFirstEffectRun.current) {
       isFirstEffectRun.current = false;
-      if (hadServerData.current && !isSearching && isServerRenderedSelection(selection)) return;
+      if (
+        hadServerData.current &&
+        !isSearching &&
+        isServerRenderedSelection(selection)
+      )
+        return;
     }
 
     let cancelled = false;
     setLoading(true);
     setError(null);
+    // The selection changed, so we're back to page 1 — a pagination error from
+    // the previous selection describes a request nobody will retry.
+    setPageError(null);
 
-    const request = isSearching ? fetchSearchPage(query, 1) : fetchBrowsePage(selection, null);
+    const request = isSearching
+      ? fetchSearchPage(query, 1)
+      : fetchBrowsePage(selection, null);
 
     request
       .then((page) => {
         if (!cancelled) setResults(page);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load markets");
+        if (!cancelled)
+          setError(
+            err instanceof Error ? err.message : "Failed to load markets",
+          );
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -257,7 +315,7 @@ export function MarketGrid({
   async function loadMore() {
     if (!results.hasMore || loading) return;
     setLoading(true);
-    setError(null);
+    setPageError(null);
     try {
       const next = isSearching
         ? await fetchSearchPage(query, results.page + 1)
@@ -265,9 +323,14 @@ export function MarketGrid({
 
       // Append, but keep the *new* pagination state — `next.items` is only
       // this page's worth.
-      setResults((prev) => ({ ...next, items: [...prev.items, ...next.items] }));
+      setResults((prev) => ({
+        ...next,
+        items: [...prev.items, ...next.items],
+      }));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load more markets");
+      setPageError(
+        err instanceof Error ? err.message : "Failed to load more markets",
+      );
     } finally {
       setLoading(false);
     }
@@ -281,7 +344,10 @@ export function MarketGrid({
             <>No markets found for &ldquo;{query}&rdquo;.</>
           ) : (
             <>
-              <span className="text-zinc-200">{results.totalResults?.toLocaleString() ?? "—"}</span> result
+              <span className="text-zinc-200">
+                {results.totalResults?.toLocaleString() ?? "—"}
+              </span>{" "}
+              result
               {results.totalResults === 1 ? "" : "s"} for &ldquo;{query}&rdquo;
             </>
           )}
@@ -318,7 +384,9 @@ export function MarketGrid({
       )}
 
       {error ? (
-        <p className="rounded-lg border border-red-900/50 bg-red-950/30 px-4 py-3 text-sm text-red-300">{error}</p>
+        <p className="rounded-lg border border-red-900/50 bg-red-950/30 px-4 py-3 text-sm text-red-300">
+          {error}
+        </p>
       ) : null}
 
       {results.items.length === 0 && !loading ? (
@@ -333,15 +401,30 @@ export function MarketGrid({
         </div>
       )}
 
+      {/*
+        Grouped with the button rather than placed near the top: this is the
+        one error the user is looking straight at when it happens, and the
+        button on its own re-enabling reads as "nothing happened".
+      */}
       {results.hasMore ? (
-        <button
-          type="button"
-          onClick={loadMore}
-          disabled={loading}
-          className="mx-auto rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-sm font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100 disabled:cursor-wait disabled:opacity-60"
-        >
-          {loading ? "Loading…" : "Load more"}
-        </button>
+        <div className="flex flex-col items-center gap-3">
+          {pageError ? (
+            <p
+              role="status"
+              className="rounded-lg border border-red-900/50 bg-red-950/30 px-4 py-3 text-center text-sm text-red-300"
+            >
+              {pageError}
+            </p>
+          ) : null}
+          <button
+            type="button"
+            onClick={loadMore}
+            disabled={loading}
+            className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-4 py-2 text-sm font-medium text-zinc-300 transition hover:border-zinc-700 hover:text-zinc-100 disabled:cursor-wait disabled:opacity-60"
+          >
+            {loading ? "Loading…" : pageError ? "Try again" : "Load more"}
+          </button>
+        </div>
       ) : null}
     </div>
   );
@@ -353,16 +436,39 @@ function setParam(params: URLSearchParams, key: string, value: string | null) {
   else params.set(key, value);
 }
 
-/** Fetches JSON, surfacing the route's own `error` message when there is one. */
+/**
+ * Fetches JSON, surfacing the route's own `error` message when there is one.
+ *
+ * The timeout covers the body read as well as the response, which is why the
+ * whole thing sits in one `try` — aborting the request errors the body stream
+ * too, so a `response.json()` left outside would reject with a raw
+ * `AbortError` the callers would render verbatim.
+ */
 async function getJson(url: string): Promise<unknown> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    const body: unknown = await response.json().catch(() => null);
-    const message =
-      body && typeof body === "object" && "error" in body ? String((body as { error: unknown }).error) : null;
-    throw new Error(message ?? `Request failed (${response.status})`);
+  try {
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      const body: unknown = await response.json().catch(() => null);
+      const message =
+        body && typeof body === "object" && "error" in body
+          ? String((body as { error: unknown }).error)
+          : null;
+      throw new Error(message ?? `Request failed (${response.status})`);
+    }
+    return await response.json();
+  } catch (err) {
+    // `AbortSignal.timeout` rejects with a `TimeoutError`; a manual
+    // `controller.abort()` would be an `AbortError`. Only the first is the
+    // user's problem — the second means we walked away from the request.
+    // No "try again" in the wording: on the pagination path the button beside
+    // this message already says exactly that.
+    if (err instanceof DOMException && err.name === "TimeoutError") {
+      throw new Error("This is taking longer than expected.");
+    }
+    throw err;
   }
-  return response.json();
 }
 
 /** A labelled row of mutually-exclusive chips — sort and each range filter. */
@@ -392,7 +498,15 @@ function ChipGroup<Id extends string>({
   );
 }
 
-function CategoryChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+function CategoryChip({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"
