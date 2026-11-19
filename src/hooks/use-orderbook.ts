@@ -78,7 +78,7 @@ export function useOrderBook(tokenId: string | undefined): {
 
           for await (const event of handle) {
             if (controller.signal.aborted) break;
-            bookRef.current = applyMarketEvent(bookRef.current, event);
+            bookRef.current = applyMarketEvent(bookRef.current, event, tokenId);
             setBook(bookRef.current);
           }
         } catch {

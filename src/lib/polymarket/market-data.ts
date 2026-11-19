@@ -77,13 +77,22 @@ function upsertLevel(levels: OrderBookLevel[], price: number, size: number): Ord
  * of `customFeatureEnabled` being unset, since `MarketSubscription` isn't a
  * literal-narrowed const. The `default` branch below already handles any
  * event type we don't explicitly care about, so this is a no-op in practice.
+ *
+ * 🚩 **Every event is filtered to `tokenId`.** One `price_change` carries the
+ * deltas for *both* outcome tokens of a market even on a single-token
+ * subscription — measured live 2026-11-19, 86 entries for ours and 86 for the
+ * other in 25s. Applying them all wrote the NO book into the YES book: a
+ * 10¢ market showed an 88¢ bid and a −78¢ spread, and it got worse the
+ * longer the page stayed open.
  */
 export function applyMarketEvent(
   state: OrderBookState | null,
   event: MarketEvent,
+  tokenId: string,
 ): OrderBookState | null {
   switch (event.type) {
     case "book": {
+      if (String(event.payload.tokenId) !== tokenId) return state;
       const { bids, asks, lastTradePrice, tickSize } = event.payload;
       return {
         bids: sortBids(bids.map((level) => ({ price: Number(level.price), size: Number(level.size) }))),
@@ -96,6 +105,7 @@ export function applyMarketEvent(
       if (!state) return state;
       let { bids, asks } = state;
       for (const change of event.payload.priceChanges) {
+        if (String(change.tokenId) !== tokenId) continue;
         const price = Number(change.price);
         const size = Number(change.size);
         if (change.side === OrderSide.BUY) {
@@ -107,8 +117,10 @@ export function applyMarketEvent(
       return { ...state, bids: sortBids(bids), asks: sortAsks(asks) };
     }
     case "last_trade_price":
+      if (String(event.payload.tokenId) !== tokenId) return state;
       return state ? { ...state, lastTradePrice: Number(event.payload.price) } : state;
     case "tick_size_change":
+      if (String(event.payload.tokenId) !== tokenId) return state;
       return state ? { ...state, tickSize: Number(event.payload.newTickSize) } : state;
     default:
       return state;
