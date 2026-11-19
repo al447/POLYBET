@@ -87,7 +87,7 @@ The application also **states plainly that attributed volume is currently zero**
 
 **Draft archived outside the repo** at `…/scratchpad/EMAIL-paste-this.txt` — it contains the builder API key, so it must never be moved into the project directory.
 
-✅ **Done when:** Polymarket replies and the tier is granted. Track it with the leaderboard check in item 4 — once we have any volume, our row on `data-api.polymarket.com/v1/builders/leaderboard` carries a `verified` boolean, and that is the **only programmatic confirmation that exists**.
+✅ **Done when:** Polymarket replies and the tier is granted. Track it with the leaderboard check in item 4 — once we have any volume, our row on `data-api.polymarket.com/v2/builders/leaderboard` carries a `verified` boolean, and that is the **only programmatic confirmation that exists**.
 
 ---
 
@@ -130,6 +130,14 @@ GET data-api.polymarket.com/v1/builders/volume?timePeriod=DAY    40,101 rows —
                                               ?timePeriod=ALL       611 rows — ours NOT LISTED
 ```
 
+**Re-measured 2026-11-19 on Data API v2** (v1 retired 2026-11-02 and now answers 410) — still absent:
+
+```
+GET data-api.polymarket.com/v2/builders/leaderboard?time_period=all&limit=1000    632 rows — ours NOT LISTED
+```
+
+⚠️ Use the **leaderboard** for this check on v2, not `/v2/builders/volume`. The volume route became a per-date time series (`interval` is a bucket width), so it no longer answers "are we on the board for this window".
+
 That makes this item the mitigation for item 2's weakest point, not just a Milestone 1 formality. It is now **urgent rather than merely outstanding**: the docs say to allow up to 24h for matched volume to appear, so an order placed during the review window shows up while a reviewer is looking.
 
 **Prerequisites:**
@@ -162,7 +170,7 @@ for e in json.load(sys.stdin).get('events',[]):
 
 Then confirm the market before spending: `curl -s "https://clob.polymarket.com/book?token_id=<id>"` returns `tick_size`, `min_order_size` and live depth. A deep book at a mid-range price fills $5 with no slippage; extreme prices (0.0005 / 0.9995) make the share math awkward.
 
-✅ **Done when:** the fill appears under our builder code in `listBuilderTrades` (`npm run smoke:builder` with no `--live` re-checks just this), **and** our code appears on `data-api.polymarket.com/v1/builders/volume`. Once it does, the `verified` boolean on `/v1/builders/leaderboard` becomes readable — the only programmatic way to confirm item 2 was granted.
+✅ **Done when:** the fill appears under our builder code in `listBuilderTrades` (`npm run smoke:builder` with no `--live` re-checks just this), **and** our code appears on `data-api.polymarket.com/v2/builders/leaderboard`. Once it does, the `verified` boolean on that row becomes readable — the only programmatic way to confirm item 2 was granted.
 
 ---
 
@@ -200,7 +208,7 @@ Item 1 has no command — it completes when the client confirms wallet receipt. 
 Item 2 gains a command only *after* item 4 lands. Until our code has volume there is no per-builder profile endpoint to query — `/v1/builders/<code>`, `/v1/builders/profile?builderCode=…` and `clob.polymarket.com/builder/<code>` all **404** (probed 2026-08-23). The `verified` flag lives only on the leaderboard row:
 
 ```bash
-curl -s "https://data-api.polymarket.com/v1/builders/leaderboard?timePeriod=ALL" | grep 0x5eb653d0
+curl -s "https://data-api.polymarket.com/v2/builders/leaderboard?time_period=all&limit=1000" | grep 0x5eb653d0
 ```
 
 Until then, Polymarket's reply email is the sole confirmation — keep it.

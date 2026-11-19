@@ -24,8 +24,14 @@ import type { TraderTrade } from "./types";
  * authenticated and must never carry a credential — these are the same numbers
  * the Polymarket website shows on a public profile.
  *
- * Endpoints verified live 2026-08-17. Parsing is split from fetching so the
- * wire quirks are unit-tested without a network.
+ * 🚩 Data API v1 was retired 2026-11-02 — `/trades` and `/positions` are now a
+ * 410, which this file read as "no trades" for two weeks. Moved to `/v2/trades`
+ * and `/v2/positions`, re-verified live 2026-11-19 against
+ * `data-api.polymarket.com/v2/openapi.json`. Every v2 payload arrives wrapped
+ * in `{ data, pagination }` with snake_case fields; `offset` is a 400.
+ *
+ * Parsing is split from fetching so the wire quirks are unit-tested without a
+ * network.
  */
 
 const REQUEST_TIMEOUT_MS = 8000;
@@ -33,8 +39,7 @@ const REQUEST_TIMEOUT_MS = 8000;
 /**
  * How many rows to pull per poll.
  *
- * 🚩 Not a page size in the usual sense — there is **no cap** on this endpoint.
- * Asking for 500 returned a trader's entire 279-row history, so a large value
+ * 🚩 Not a page size in the usual sense — v2 allows up to 1000 rows, so a large value
  * plus an unseeded cursor is what would replay someone's whole trading career
  * as live copies. 100 is generous for one poll interval while keeping the
  * response small; the cursor in `selectCopyableIntents` is what actually
@@ -67,26 +72,35 @@ async function dataApiFetch<T>(path: string, signal?: AbortSignal): Promise<T | 
   }
 }
 
+/** The row array inside a v2 `{ data, pagination }` envelope, or `null` if there isn't one. */
+function rowsOf(payload: unknown): unknown[] | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const data = (payload as { data?: unknown }).data;
+  return Array.isArray(data) ? data : null;
+}
+
 /**
- * Normalises `/trades` rows into `TraderTrade`.
+ * Normalises a `/v2/trades` page into `TraderTrade`.
  *
- * Verified wire shape, 2026-08-17:
+ * Verified wire row, 2026-11-19 (`taker_only` defaults to `true`, as v1 did, so
+ * each fill still arrives once):
  *
  * ```json
- * { "proxyWallet":"0x04d5…66d8", "side":"BUY",
- *   "asset":"64921565…95123", "conditionId":"0xf43f26…",
- *   "size":38132.38, "price":0.3234694976, "timestamp":1786932886,
- *   "title":"Will Club Tijuana win on 2026-08-16?", "outcome":"Yes",
- *   "slug":"mex-tij-caz-2026-08-16-tij", "eventSlug":"mex-tij-caz-2026-08-16",
- *   "transactionHash":"0xcf987e…" }
+ * { "proxy_wallet":"0x2ecb…ecb8", "side":"BUY",
+ *   "token_id":"54392372…93391", "condition_id":"0x4c3844…",
+ *   "size":3499.47, "price":0.957, "timestamp":1795081472,
+ *   "title":"Will Tim Cook be the next CEO of NVIDIA?", "outcome":"No",
+ *   "slug":"will-tim-cook-be-the-next-ceo-of-nvidia", "event_slug":"next-ceo-of-nvidia",
+ *   "transaction_hash":"0xa6111c…" }
  * ```
  *
- * Two renames are deliberate. `asset` becomes **`tokenId`** because that is
- * what `placeMarketBuy` calls it, and an order call site reading `asset` is one
- * rename away from passing a condition id instead. `proxyWallet` becomes
- * `address`, matching `LeaderboardTrader`.
+ * `token_id` becomes **`tokenId`** because that is what `placeMarketBuy` calls
+ * it, and `condition_id` is the easy wrong answer at an order call site.
+ * `proxy_wallet` becomes `address`, matching `LeaderboardTrader`.
  *
- * ⚠️ `timestamp` is Unix **seconds**. Multiplying by 1000 somewhere downstream
+ * ⚠️ `timestamp` is Unix **seconds** (v2's own schema: "block timestamp of the
+ * fill, epoch seconds"), so stored cursors and ledger intent keys from v1 still
+ * line up. Multiplying by 1000 somewhere downstream
  * and comparing against a seconds cursor would make every trade look like it
  * happened in the far future — and be copied forever.
  *
@@ -95,32 +109,33 @@ async function dataApiFetch<T>(path: string, signal?: AbortSignal): Promise<T | 
  * mirror even in principle.
  */
 export function parseTraderTrades(payload: unknown, fallbackAddress: string): TraderTrade[] {
-  if (!Array.isArray(payload)) return [];
+  const rows = rowsOf(payload);
+  if (!rows) return [];
 
   const trades: TraderTrade[] = [];
-  for (const entry of payload) {
+  for (const entry of rows) {
     if (typeof entry !== "object" || entry === null) continue;
     const row = entry as Record<string, unknown>;
 
-    const tokenId = str(row.asset);
+    const tokenId = str(row.token_id);
     const side = str(row.side).toUpperCase();
     if (!tokenId) continue;
     if (side !== "BUY" && side !== "SELL") continue;
 
     trades.push({
-      address: (str(row.proxyWallet) || fallbackAddress).toLowerCase(),
+      address: (str(row.proxy_wallet) || fallbackAddress).toLowerCase(),
       side,
       tokenId,
-      conditionId: str(row.conditionId),
+      conditionId: str(row.condition_id),
       size: num(row.size),
       price: num(row.price),
       timestamp: num(row.timestamp),
       title: str(row.title),
       outcome: str(row.outcome),
       slug: str(row.slug),
-      eventSlug: str(row.eventSlug),
+      eventSlug: str(row.event_slug),
       icon: str(row.icon) || undefined,
-      transactionHash: str(row.transactionHash),
+      transactionHash: str(row.transaction_hash),
     });
   }
 
@@ -134,23 +149,28 @@ export function parseTraderTrades(payload: unknown, fallbackAddress: string): Tr
  * "how much of this one token do they still hold, now that the sell has
  * landed?" — the denominator for a proportional exit. See `decideCopy`.
  *
- * Verified shape 2026-08-17: `{ asset, conditionId, size, avgPrice,
- * currentValue, title, outcome, redeemable }`. Note this endpoint accepts **any**
- * address, not just your own — which is what makes mirroring an exit possible
- * at all.
+ * Verified v2 row 2026-11-19: `{ token_id, condition_id, current_size,
+ * total_size, avg_price, current_value, status, redeemable, … }`. Note this
+ * endpoint accepts **any** address, not just your own — which is what makes
+ * mirroring an exit possible at all.
+ *
+ * 🚩 Read **`current_size`**, never `total_size`. The second is lifetime shares
+ * bought, so a trader who sold out would still look fully invested and their
+ * exit would never be mirrored.
  */
 export function parseTraderPositionSizes(payload: unknown): Map<string, number> {
   const sizes = new Map<string, number>();
-  if (!Array.isArray(payload)) return sizes;
+  const rows = rowsOf(payload);
+  if (!rows) return sizes;
 
-  for (const entry of payload) {
+  for (const entry of rows) {
     if (typeof entry !== "object" || entry === null) continue;
     const row = entry as Record<string, unknown>;
 
-    const tokenId = str(row.asset);
+    const tokenId = str(row.token_id);
     if (!tokenId) continue;
 
-    const size = num(row.size);
+    const size = num(row.current_size);
     if (size > 0) sizes.set(tokenId, size);
   }
 
@@ -165,7 +185,7 @@ export async function fetchTraderTrades(
   const limit = Math.max(1, Math.trunc(options.limit ?? TRADE_POLL_LIMIT));
   const query = new URLSearchParams({ user: address, limit: String(limit) });
 
-  const payload = await dataApiFetch<unknown>(`/trades?${query.toString()}`, options.signal);
+  const payload = await dataApiFetch<unknown>(`/v2/trades?${query.toString()}`, options.signal);
   return parseTraderTrades(payload, address);
 }
 
@@ -182,7 +202,7 @@ export async function fetchTraderPositionSizes(
 ): Promise<Map<string, number>> {
   const query = new URLSearchParams({ user: address, limit: "500" });
 
-  const payload = await dataApiFetch<unknown>(`/positions?${query.toString()}`, options.signal);
+  const payload = await dataApiFetch<unknown>(`/v2/positions?${query.toString()}`, options.signal);
   return parseTraderPositionSizes(payload);
 }
 

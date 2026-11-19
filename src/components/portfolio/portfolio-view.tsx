@@ -2,12 +2,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import type { Position } from "@polymarket/bindings/data";
 
 import { useBrowserClient } from "@/hooks/use-browser-client";
 import { useUserChannel } from "@/hooks/use-user-channel";
 import { readCollateralBalance, type BrowserClient } from "@/lib/polymarket/browser-client";
-import { listPortfolioPositions, summarizePositions, type PortfolioSummary } from "@/lib/polymarket/portfolio";
+import {
+  listPortfolioPositions,
+  summarizePositions,
+  type PortfolioPosition,
+  type PortfolioSummary,
+} from "@/lib/polymarket/portfolio";
 import { groupRedeemable } from "@/lib/polymarket/redeem";
 import { fromBaseUnits } from "@/lib/polymarket/fees";
 import { Card, StatusDot } from "@/components/ui/primitives";
@@ -39,7 +43,7 @@ import { FillToasts } from "@/components/trade/fill-toasts";
 
 type Data =
   | { state: "loading" }
-  | { state: "ready"; positions: Position[]; summary: PortfolioSummary; cash: bigint }
+  | { state: "ready"; positions: PortfolioPosition[]; summary: PortfolioSummary; cash: bigint }
   | { state: "error"; message: string };
 
 export function PortfolioView() {

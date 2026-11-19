@@ -562,10 +562,10 @@ async function readOurShares(client: BrowserClient | null): Promise<Map<string, 
   if (!client) return shares;
 
   try {
-    // 🚩 `tokenId`, not `asset`. Two different position shapes are in play:
-    // the Data API's raw JSON rows (`trader-feed.ts`, where the field really is
-    // `asset`) and the SDK's typed `Position` returned here, where it is
-    // `tokenId`. Reading `asset` off this one is silently `undefined`, so every
+    // 🚩 `tokenId`, not `token_id`. Two different position shapes are in play:
+    // the Data API's raw JSON rows (`trader-feed.ts`) and the normalised
+    // `PortfolioPosition` returned here. Reading the raw name off this one is
+    // silently `undefined`, so every
     // holding was skipped, the map came back empty, and `decideCopy` read that
     // as "nothing to exit" — exits were never sized.
     for (const position of await listPortfolioPositions(client)) {

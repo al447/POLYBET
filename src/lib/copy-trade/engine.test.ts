@@ -8,7 +8,12 @@ import {
   summariseBudget,
   utcDayStartMs,
 } from "./engine";
-import { DEFAULT_COPY_SETTINGS, type CopyLedgerEntry, type TraderTrade } from "./types";
+import {
+  DEFAULT_COPY_SETTINGS,
+  MAX_COPY_AGE_SECONDS,
+  type CopyLedgerEntry,
+  type TraderTrade,
+} from "./types";
 
 /**
  * Fixtures are the real wire shape from
@@ -124,7 +129,7 @@ describe("selectCopyableIntents", () => {
   ];
 
   it("ignores everything at or before the cursor", () => {
-    const { intents } = selectCopyableIntents({ trades, cursor: 2000, nowSeconds: 4000 });
+    const { intents } = selectCopyableIntents({ trades, cursor: 2000, nowSeconds: 3100 });
     expect(intents.map((i) => i.timestamp)).toEqual([3000]);
   });
 
@@ -246,7 +251,12 @@ describe("selectCopyableIntents", () => {
   });
 
   it("does not re-copy a trade already past the cursor when newer ones arrive", () => {
-    const first = selectCopyableIntents({ trades, cursor: 0, nowSeconds: 9999 });
+    const first = selectCopyableIntents({
+      trades,
+      cursor: 0,
+      nowSeconds: 9999,
+      maxAgeSeconds: Infinity,
+    });
     expect(first.intents.map((i) => i.timestamp)).toEqual([1000, 2000, 3000]);
 
     // The same page, plus one new trade. Only the new one is copyable.
@@ -255,8 +265,55 @@ describe("selectCopyableIntents", () => {
       trades: withNewer,
       cursor: first.nextCursor,
       nowSeconds: 9999,
+      maxAgeSeconds: Infinity,
     });
     expect(second.intents.map((i) => i.timestamp)).toEqual([4000]);
+  });
+
+  /**
+   * 🚩 Added 2026-11-19. The v1 retirement froze every cursor for 17 days, and
+   * on recovery each trader's backlog would have queued as live copies at
+   * stale prices — eating the daily cap that real trades needed.
+   */
+  describe("stale buys", () => {
+    const NOW = 100_000;
+    const backlog = [
+      trade({ timestamp: NOW - 3600, tokenId: "tok-old", transactionHash: "0xold" }),
+      trade({ timestamp: NOW - 60, tokenId: "tok-new", transactionHash: "0xnew" }),
+    ];
+
+    it("drops a buy older than the age limit", () => {
+      const { intents } = selectCopyableIntents({ trades: backlog, cursor: 0, nowSeconds: NOW });
+      expect(intents.map((i) => i.tokenId)).toEqual(["tok-new"]);
+    });
+
+    it("keeps a buy exactly at the age limit", () => {
+      const { intents } = selectCopyableIntents({
+        trades: [trade({ timestamp: NOW - MAX_COPY_AGE_SECONDS })],
+        cursor: 0,
+        nowSeconds: NOW,
+      });
+      expect(intents).toHaveLength(1);
+    });
+
+    it("still advances the cursor past a dropped buy, so it is skipped once", () => {
+      const { intents, nextCursor } = selectCopyableIntents({
+        trades: [backlog[0]],
+        cursor: 0,
+        nowSeconds: NOW,
+      });
+      expect(intents).toEqual([]);
+      expect(nextCursor).toBe(NOW - 3600);
+    });
+
+    it("keeps a stale sell, since an exit still reduces exposure", () => {
+      const { intents } = selectCopyableIntents({
+        trades: [trade({ timestamp: NOW - 3600, side: "SELL" })],
+        cursor: 0,
+        nowSeconds: NOW,
+      });
+      expect(intents.map((i) => i.side)).toEqual(["SELL"]);
+    });
   });
 });
 

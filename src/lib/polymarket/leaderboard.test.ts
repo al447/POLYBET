@@ -3,48 +3,53 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchLeaderboard } from "./leaderboard";
 
 /**
- * Fixtures copied verbatim from a real
- * `data-api.polymarket.com/v1/leaderboard?timePeriod=WEEK&orderBy=PNL`
- * response on 2026-08-17 (values shortened, shapes untouched). Each row here
- * is a quirk that was actually observed, not an invented edge case:
+ * Rows in the Data API v2 shape, captured from a real
+ * `data-api.polymarket.com/v2/leaderboard?time_period=week&sort_by=PNL`
+ * response on 2026-11-19 (values shortened, shapes untouched). The quirks are
+ * real ones, not invented edge cases:
  *
- *   - `rank` is a string on every row
- *   - `profileImage` is empty on 47 of 50 rows
- *   - `vol` is genuinely 0 for several top-PnL traders
- *   - `userName` is sometimes empty, sometimes `0x…-<timestamp>`
+ *   - `profile_image` is empty on most rows
+ *   - `volume` is genuinely 0 for some top-PnL traders
+ *   - `user_name` is sometimes empty, sometimes `0x…-<timestamp>`
  */
 const fixtureRows = [
   {
-    rank: "1",
-    proxyWallet: "0x04d5524a0a5af2eca6e39e03defc261d42fe66d8",
-    userName: "WTSA",
-    xUsername: "",
-    verifiedBadge: false,
-    vol: 2339052.0,
+    rank: 1,
+    user_id: "0x04d5524a0a5af2eca6e39e03defc261d42fe66d8",
+    user_name: "WTSA",
+    x_username: "",
+    verified: false,
+    volume: 2339052.0,
     pnl: 287429.0329031234,
-    profileImage: "",
+    profile_image: "",
   },
   {
-    rank: "2",
-    proxyWallet: "0x3dfb153c197d4c19d3b31c1ecd2c7b6860eeabaf",
-    userName: "0x3DFb153c197D4C19D3B31c1ecD2c7B6860eeabAf-1722957908185",
-    xUsername: "",
-    verifiedBadge: false,
-    vol: 3557231.0,
+    rank: 2,
+    user_id: "0x3dfb153c197d4c19d3b31c1ecd2c7b6860eeabaf",
+    user_name: "0x3DFb153c197D4C19D3B31c1ecD2c7B6860eeabAf-1722957908185",
+    x_username: "",
+    verified: false,
+    volume: 3557231.0,
     pnl: 138702.5,
-    profileImage: "",
+    profile_image: "",
   },
   {
-    rank: "3",
-    proxyWallet: "0x4ab9000000000000000000000000000000008ebe",
-    userName: "RWCS",
-    xUsername: "",
-    verifiedBadge: true,
-    vol: 0,
+    rank: 3,
+    user_id: "0x4ab9000000000000000000000000000000008ebe",
+    user_name: "RWCS",
+    x_username: "",
+    verified: true,
+    volume: 0,
     pnl: 102266.87,
-    profileImage: "https://polymarket-upload.s3.us-east-2.amazonaws.com/profile.png",
+    profile_image: "https://polymarket-upload.s3.us-east-2.amazonaws.com/profile.png",
   },
 ];
+
+/** v2 wraps every payload in `data`, paginated routes add `pagination`. */
+const page = (rows: unknown[]) => ({
+  data: rows,
+  pagination: { limit: rows.length, offset: 0, has_more: false, next_cursor: null },
+});
 
 const mockFetchOnce = (body: unknown, status = 200) =>
   vi.stubGlobal(
@@ -75,8 +80,8 @@ afterEach(() => {
 });
 
 describe("fetchLeaderboard", () => {
-  it("normalises the wire shape, including the string rank", async () => {
-    mockFetchOnce(fixtureRows);
+  it("normalises the v2 wire shape", async () => {
+    mockFetchOnce(page(fixtureRows));
 
     const traders = await fetchLeaderboard({ periodId: "1w", orderingId: "pnl", limit: 3 });
 
@@ -93,7 +98,7 @@ describe("fetchLeaderboard", () => {
   });
 
   it("replaces an address-shaped username with a shortened address", async () => {
-    mockFetchOnce(fixtureRows);
+    mockFetchOnce(page(fixtureRows));
 
     const traders = await fetchLeaderboard();
 
@@ -101,7 +106,7 @@ describe("fetchLeaderboard", () => {
   });
 
   it("keeps rows whose volume is genuinely zero", async () => {
-    mockFetchOnce(fixtureRows);
+    mockFetchOnce(page(fixtureRows));
 
     const traders = await fetchLeaderboard();
 
@@ -110,7 +115,7 @@ describe("fetchLeaderboard", () => {
   });
 
   it("carries a present profile image through and drops an empty one", async () => {
-    mockFetchOnce(fixtureRows);
+    mockFetchOnce(page(fixtureRows));
 
     const traders = await fetchLeaderboard();
 
@@ -123,23 +128,33 @@ describe("fetchLeaderboard", () => {
 
   /**
    * 🚩 The regression this exists to catch: `window` is not a parameter on
-   * this endpoint. Sending it instead of `timePeriod` returns a clean 200 of
-   * the DAY board, so a "this week" page would silently show today's numbers.
+   * this endpoint. Sending it instead of `time_period` returns a clean 200 of
+   * the day board, so a "this week" page would silently show today's numbers.
    */
-  it("sends timePeriod and orderBy, resolved from ids", async () => {
-    const fetchMock = mockFetchCapturing([]);
+  it("sends time_period and sort_by, resolved from ids", async () => {
+    const fetchMock = mockFetchCapturing(page([]));
 
     await fetchLeaderboard({ periodId: "1m", orderingId: "volume", limit: 10 });
 
     const url = new URL(fetchMock.mock.calls[0][0]);
-    expect(url.pathname).toBe("/v1/leaderboard");
-    expect(url.searchParams.get("timePeriod")).toBe("MONTH");
-    expect(url.searchParams.get("orderBy")).toBe("VOL");
+    expect(url.pathname).toBe("/v2/leaderboard");
+    expect(url.searchParams.get("time_period")).toBe("month");
+    expect(url.searchParams.get("sort_by")).toBe("VOLUME");
     expect(url.searchParams.get("window")).toBeNull();
   });
 
-  it("clamps limit to the API's own ceiling of 50", async () => {
-    const fetchMock = mockFetchCapturing([]);
+  // v2 400s on any offset, including 0.
+  it("never sends offset", async () => {
+    const fetchMock = mockFetchCapturing(page([]));
+
+    await fetchLeaderboard();
+
+    const url = new URL(fetchMock.mock.calls[0][0]);
+    expect(url.searchParams.has("offset")).toBe(false);
+  });
+
+  it("clamps limit to our page cap of 50", async () => {
+    const fetchMock = mockFetchCapturing(page([]));
 
     await fetchLeaderboard({ limit: 500 });
 
@@ -148,7 +163,7 @@ describe("fetchLeaderboard", () => {
   });
 
   it("skips rows with no wallet address rather than rendering a nameless entry", async () => {
-    mockFetchOnce([{ rank: "1", userName: "ghost", pnl: 10, vol: 10 }, fixtureRows[0]]);
+    mockFetchOnce(page([{ rank: 1, user_name: "ghost", pnl: 10, volume: 10 }, fixtureRows[0]]));
 
     const traders = await fetchLeaderboard();
 
@@ -156,12 +171,12 @@ describe("fetchLeaderboard", () => {
     expect(traders[0].name).toBe("WTSA");
   });
 
-  it("falls back to offset-aware positions when rank is missing", async () => {
-    mockFetchOnce([{ proxyWallet: "0xabc0000000000000000000000000000000000001", pnl: 1, vol: 1 }]);
+  it("falls back to position-in-page when rank is missing", async () => {
+    mockFetchOnce(page([{ user_id: "0xabc0000000000000000000000000000000000001", pnl: 1, volume: 1 }]));
 
-    const traders = await fetchLeaderboard({ offset: 25 });
+    const traders = await fetchLeaderboard();
 
-    expect(traders[0].rank).toBe(26);
+    expect(traders[0].rank).toBe(1);
   });
 
   it("returns an empty list rather than throwing on an upstream failure", async () => {
@@ -172,6 +187,13 @@ describe("fetchLeaderboard", () => {
 
   it("returns an empty list when the body is not an array", async () => {
     mockFetchOnce({ traders: [] });
+
+    await expect(fetchLeaderboard()).resolves.toEqual([]);
+  });
+
+  // The exact shape that took the board down: v1 retired on 2026-11-02.
+  it("returns an empty list on the v1 retirement 410", async () => {
+    mockFetchOnce({ error: "Data API v1 has been retired" }, 410);
 
     await expect(fetchLeaderboard()).resolves.toEqual([]);
   });
