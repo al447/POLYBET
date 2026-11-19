@@ -24,6 +24,17 @@ export const isAuthConfigured = PRIVY_APP_ID.length > 0;
 export const CHAIN_ID = 137;
 
 /**
+ * Polygon RPC for the embedded wallet's chain reads.
+ *
+ * Without it Privy falls back to viem's default, the free `polygon.drpc.org`,
+ * which 400s under load and broke "Enable trading" (2026-11-19). This is a
+ * **separate, public** key locked to our origin at the provider — never the
+ * server's `POLYGON_RPC_URL`. Build-time inlined, so it belongs in
+ * `.env.local` / the build env like the other `NEXT_PUBLIC_*` values.
+ */
+export const BROWSER_POLYGON_RPC_URL = process.env.NEXT_PUBLIC_POLYGON_RPC_URL ?? "";
+
+/**
  * Builder code (P-1) for order attribution.
  *
  * Safe in the client bundle, unlike every other builder credential: the code is

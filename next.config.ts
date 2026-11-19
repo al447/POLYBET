@@ -3,6 +3,18 @@ import { initOpenNextCloudflareForDev } from "@opennextjs/cloudflare";
 
 const isDev = process.env.NODE_ENV === "development";
 
+// Browser RPC origin for the embedded wallet (public-config.ts). Derived, so
+// the CSP can never drift from the key actually baked into the bundle.
+const browserRpcOrigin = (() => {
+  try {
+    return process.env.NEXT_PUBLIC_POLYGON_RPC_URL
+      ? new URL(process.env.NEXT_PUBLIC_POLYGON_RPC_URL).origin
+      : null;
+  } catch {
+    return null;
+  }
+})();
+
 /**
  * 🚩 Flip to `true` only after report-only has run clean through a real Privy
  * login AND a real order signature in a DEPLOYED Worker (deployment.md, Phase
@@ -79,10 +91,12 @@ const CSP_DIRECTIVES: Record<string, string[]> = {
     // Privy auth + its RPC proxy. The browser reaches Polygon through Privy's
     // EIP-1193 provider (`custom(provider)` in browser-client.ts), NOT through
     // POLYGON_RPC_URL — that is a server-side secret and never a browser
-    // origin, so it deliberately does not appear here.
+    // origin, so it deliberately does not appear here. Privy's own reads go
+    // to NEXT_PUBLIC_POLYGON_RPC_URL, a separate origin-locked key.
     "https://auth.privy.io",
     "https://*.privy.io",
     "https://*.rpc.privy.systems",
+    ...(browserRpcOrigin ? [browserRpcOrigin] : []),
     ...(isDev ? ["ws://localhost:*", "http://localhost:*"] : []),
   ],
 

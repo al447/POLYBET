@@ -1,9 +1,9 @@
 "use client";
 
-import { PrivyProvider } from "@privy-io/react-auth";
+import { PrivyProvider, addRpcUrlOverrideToChain } from "@privy-io/react-auth";
 import { polygon } from "viem/chains";
 
-import { PRIVY_APP_ID, isAuthConfigured } from "@/lib/auth/public-config";
+import { BROWSER_POLYGON_RPC_URL, PRIVY_APP_ID, isAuthConfigured } from "@/lib/auth/public-config";
 import { LEGAL_DOCUMENTS } from "@/lib/legal/documents";
 
 /**
@@ -17,6 +17,11 @@ import { LEGAL_DOCUMENTS } from "@/lib/legal/documents";
  * an empty app id: Privy throws on an invalid id, which would take down every
  * page instead of just the login button. Mock mode must keep rendering.
  */
+// unset falls back to viem's free default, which 400s under load
+const POLYGON = BROWSER_POLYGON_RPC_URL
+  ? addRpcUrlOverrideToChain(polygon, BROWSER_POLYGON_RPC_URL)
+  : polygon;
+
 export function Providers({ children }: { children: React.ReactNode }) {
   if (!isAuthConfigured) return <>{children}</>;
 
@@ -37,8 +42,8 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
         // Polymarket is Polygon-only. Constraining this stops the wallet from
         // ever being pointed at a chain where the CTF contracts do not exist.
-        defaultChain: polygon,
-        supportedChains: [polygon],
+        defaultChain: POLYGON,
+        supportedChains: [POLYGON],
 
         appearance: {
           theme: "dark",
