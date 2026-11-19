@@ -1,5 +1,6 @@
 import {
   createSecureClient,
+  forkEnvironmentConfig,
   remoteBuilderSigning,
   type SecureClient,
 } from "@polymarket/client";
@@ -7,7 +8,7 @@ import { signerFrom } from "@polymarket/client/viem";
 import { createWalletClient, custom, type EIP1193Provider } from "viem";
 import { polygon } from "viem/chains";
 
-import { BUILDER_CODE } from "@/lib/auth/public-config";
+import { BROWSER_POLYGON_RPC_URL, BUILDER_CODE } from "@/lib/auth/public-config";
 import {
   isTimeoutError,
   readCachedCredentials,
@@ -172,6 +173,11 @@ async function connectOnce(
   const reuse = cached ? { credentials: await brandCredentials(cached) } : {};
 
   const client = await createSecureClient({
+    // The SDK reads the chain itself (approvals, receipts) from its own
+    // environment RPC, which defaults to drpc no matter what Privy is given.
+    ...(BROWSER_POLYGON_RPC_URL
+      ? { environment: forkEnvironmentConfig({ name: "production", rpc: BROWSER_POLYGON_RPC_URL }) }
+      : {}),
     signer: signerFrom(walletClient),
     // Root-relative: same origin, so the session cookie authenticates us and
     // the builder secret is never shipped to the browser.
