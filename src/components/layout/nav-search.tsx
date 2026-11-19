@@ -26,6 +26,9 @@ export function NavSearch() {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    // mount runs this too, and an untouched box must not send every page home
+    if (value === (searchParams.get("q") ?? "")) return;
+
     const handle = setTimeout(() => {
       const params = new URLSearchParams(searchParams.toString());
       if (value) params.set("q", value);
