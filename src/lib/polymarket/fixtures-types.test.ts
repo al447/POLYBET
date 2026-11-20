@@ -4,9 +4,9 @@ import {
   DEFAULT_PREDICT_SORT_ID,
   PREDICT_SORTS,
   fixtureMatchesQuery,
-  isMatchEvent,
   isPredictSortId,
   leaguesOf,
+  matchEventsFromMarkets,
   parseFixture,
   resolvePredictSort,
   sortFixtures,
@@ -87,39 +87,57 @@ function fixture(overrides: Partial<Fixture> = {}): Fixture {
   };
 }
 
-/**
- * The load-bearing filter for the whole Predict AI board.
- *
- * Polymarket publishes seven events per fixture and only one of them is the
- * match. Getting this wrong doesn't error — it lists every match seven times.
- */
-describe("isMatchEvent", () => {
-  it("accepts an event carrying moneyline markets", () => {
-    expect(isMatchEvent(matchEvent())).toBe(true);
+const EPL = { tagId: 306, slug: "epl", label: "Premier League" };
+
+function leg(eventSlug: string, overrides: Partial<GammaMarket> = {}): GammaMarket {
+  return market({
+    events: [
+      {
+        slug: eventSlug,
+        title: "Manchester City FC vs. Fulham FC",
+        endDate: "2026-11-21T12:30:00Z",
+        liquidity: 555956.87,
+      },
+    ],
+    ...overrides,
+  });
+}
+
+describe("matchEventsFromMarkets", () => {
+  it("groups the three legs of each match into one event", () => {
+    const events = matchEventsFromMarkets(
+      [leg("a", { id: "1" }), leg("b", { id: "4" }), leg("a", { id: "2" }), leg("a", { id: "3" })],
+      EPL,
+    );
+
+    expect(events.map((event) => [event.slug, event.markets.length])).toEqual([
+      ["a", 3],
+      ["b", 1],
+    ]);
   });
 
-  it("rejects the derived events a fixture spawns", () => {
-    const exactScore = matchEvent({
-      markets: [market({ sportsMarketType: "soccer_exact_score" })],
-    });
-    const corners = matchEvent({
-      markets: [market({ sportsMarketType: "soccer_team_total_corners" })],
-    });
+  it("carries the parent's kickoff and liquidity, and the league it was queried under", () => {
+    const [event] = matchEventsFromMarkets([leg("a")], EPL);
 
-    expect(isMatchEvent(exactScore)).toBe(false);
-    expect(isMatchEvent(corners)).toBe(false);
+    expect(event.endDate).toBe("2026-11-21T12:30:00Z");
+    expect(event.liquidity).toBe(555956.87);
+    expect(event.tags).toEqual([{ id: "306", label: "Premier League", slug: "epl" }]);
   });
 
-  it("rejects a non-sports event, where the field is absent entirely", () => {
-    expect(isMatchEvent(matchEvent({ markets: [market({ sportsMarketType: undefined })] }))).toBe(
-      false,
+  it("skips a market with no parent event rather than inventing one", () => {
+    expect(matchEventsFromMarkets([market({ events: undefined }), market({ events: [] })], EPL)).toEqual(
+      [],
     );
   });
 
-  it("does not depend on the title, which is what a dash-splitting filter would break on", () => {
-    // A real club name containing " - " must still parse as a match.
-    const dashed = matchEvent({ title: "Nottingham - Forest vs. Derby County" });
-    expect(isMatchEvent(dashed)).toBe(true);
+  it("feeds parseFixture a match it can read, labelled with our league name", () => {
+    const legs = matchEvent().markets.map((m) => leg("epl-mac-ful-2026-11-21", m));
+    const [event] = matchEventsFromMarkets(legs, EPL);
+
+    const parsed = parseFixture(event);
+    expect(parsed?.leagueSlug).toBe("epl");
+    expect(parsed?.leagueLabel).toBe("Premier League");
+    expect(parsed?.outcomes.map((o) => o.kind)).toEqual(["home", "draw", "away"]);
   });
 });
 

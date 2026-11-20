@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import type { Metadata } from "next";
+import { connection } from "next/server";
 
 import { FixtureBoard, FixtureBoardSkeleton } from "@/components/predict/fixture-board";
 import { PredictHero } from "@/components/predict/predict-hero";
@@ -37,9 +38,9 @@ export const metadata: Metadata = {
  * Hard ceiling on the fixture fetch. Rationale for bounding the whole operation
  * rather than its parts is on `withBudget` in `lib/budget.ts`.
  *
- * 🚩 Why this page needs one at all. `getCachedFixtures` is the most expensive
- * cached entry on the site — up to twelve *sequential* Gamma pages under its own
- * `FIXTURES_BUDGET_MS`, ~16s worst case. And nothing refreshes it in the
+ * 🚩 Why this page needs one at all. `getCachedFixtures` fans out one Gamma
+ * request per main league under its own `FIXTURES_BUDGET_MS`, and a cold fill
+ * is paid inline by a visitor. Nothing refreshes it in the
  * background: OpenNext's `queue` defaults to `"dummy"`, whose `send()` throws
  * outright, so `revalidateIfRequired` logs "Failed to revalidate stale page
  * /predict-ai" and gives up. An entry therefore goes fresh -> stale -> expired
@@ -76,6 +77,9 @@ export default function PredictAiPage() {
 }
 
 async function Board() {
+  // render per request, otherwise ISR stores a timed-out render as the page
+  await connection();
+
   // Raced directly, with no `.then()` boxing: `getCachedFixtures` returns a
   // discriminated union and never resolves to `null`, so the outer `null` can
   // only ever mean "out of time". (`/market/[slug]` does need that wrapper —

@@ -151,6 +151,7 @@ describe("selectCopyableIntents", () => {
       cursor: 0,
       nowSeconds: 3002,
       settleDelaySeconds: 5,
+      maxAgeSeconds: 10_000,
     });
 
     expect(intents.map((i) => i.timestamp)).toEqual([1000, 2000]);
