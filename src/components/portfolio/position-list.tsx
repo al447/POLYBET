@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import type { Position } from "@polymarket/bindings/data";
+import type { PortfolioPosition } from "@/lib/polymarket/portfolio";
 
 /**
  * Open positions table (FR-4.2, FR-4.3).
@@ -13,7 +13,7 @@ import type { Position } from "@polymarket/bindings/data";
  * `getCachedEventBySlug`, so a market slug would 404. A position missing an
  * eventSlug renders unlinked rather than pointing at a broken URL.
  */
-export function PositionList({ positions }: { positions: Position[] }) {
+export function PositionList({ positions }: { positions: PortfolioPosition[] }) {
   return (
     <div className="overflow-hidden rounded-xl border border-zinc-800">
       <table className="w-full text-sm">
@@ -37,7 +37,7 @@ export function PositionList({ positions }: { positions: Position[] }) {
   );
 }
 
-function PositionRow({ position }: { position: Position }) {
+function PositionRow({ position }: { position: PortfolioPosition }) {
   const pnl = num(position.cashPnl);
   const percent = position.percentPnl;
   const isYes = (position.outcome ?? "").toLowerCase() === "yes";

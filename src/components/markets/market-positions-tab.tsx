@@ -2,10 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import type { Position } from "@polymarket/bindings/data";
 
 import { useBrowserClient } from "@/hooks/use-browser-client";
-import { listPortfolioPositions } from "@/lib/polymarket/portfolio";
+import { listPortfolioPositions, type PortfolioPosition } from "@/lib/polymarket/portfolio";
 import { PositionList } from "@/components/portfolio/position-list";
 
 /**
@@ -26,7 +25,7 @@ import { PositionList } from "@/components/portfolio/position-list";
  */
 export function MarketPositionsTab({ eventSlug }: { eventSlug: string }) {
   const { client, status, error, connect } = useBrowserClient();
-  const [positions, setPositions] = useState<Position[] | null>(null);
+  const [positions, setPositions] = useState<PortfolioPosition[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {

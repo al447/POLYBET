@@ -14,8 +14,8 @@ import type { GammaEvent, GammaMarket } from "./gamma-types";
  * snapshot as everywhere else in this codebase. Nothing in this file may inform
  * an order — it is a listing feed, not a price feed.
  *
- * Verified live against Gamma 2026-08-19: 176 base matches across 53 leagues in
- * a 7-day window.
+ * Verified live against Gamma 2026-11-20: 99 matches across the 8 `MAIN_LEAGUES`
+ * in a 7-day window.
  */
 
 /**
@@ -34,19 +34,31 @@ import type { GammaEvent, GammaMarket } from "./gamma-types";
  * and does not — club names contain dashes, and a false positive there silently
  * drops a real fixture off the board.
  */
-const MONEYLINE = "moneyline";
+export const MONEYLINE = "moneyline";
 
-/** Gamma's `Soccer` tag. Verified live 2026-08-19 via `GET /tags/slug/soccer`. */
-export const SOCCER_TAG_ID = 100350;
+/** A league the board lists. `tagId` is Gamma's, `slug`/`label` are ours for the chips. */
+export type MainLeague = { tagId: number; slug: string; label: string };
 
 /**
- * How far ahead the board looks.
+ * The leagues Predict AI lists. Every tag id verified live 2026-11-20 against
+ * `/markets/keyset?sports_market_types=moneyline`.
  *
- * Seven days is a deliberate ceiling, not a display preference: the derived
- * events above are ~85% of the payload, so a 7-day window costs ~1200 events
- * fetched to yield ~176 rows. Widening it multiplies the paging cost for
- * fixtures nobody is looking at yet.
+ * 🚩 Gamma's obvious slugs are often the wrong tag. `serie-a` (100618),
+ * `champions-league` (1234) and `europa-league` (100626) all exist and carry no
+ * fixtures; the live ones are `sea`, `ucl` and `uel`. Re-probe before adding one.
  */
+export const MAIN_LEAGUES: readonly MainLeague[] = [
+  { tagId: 306, slug: "epl", label: "Premier League" },
+  { tagId: 780, slug: "la-liga", label: "La Liga" },
+  { tagId: 101962, slug: "serie-a", label: "Serie A" },
+  { tagId: 1494, slug: "bundesliga", label: "Bundesliga" },
+  { tagId: 102070, slug: "ligue-1", label: "Ligue 1" },
+  { tagId: 100977, slug: "ucl", label: "Champions League" },
+  { tagId: 101787, slug: "uel", label: "Europa League" },
+  { tagId: 100100, slug: "mls", label: "MLS" },
+];
+
+/** How far ahead the board looks. */
 export const FIXTURE_WINDOW_DAYS = 7;
 
 /** Tags every soccer fixture carries, so they can never be mistaken for the league. */
@@ -117,9 +129,39 @@ export function resolvePredictSort(id: string | null | undefined): PredictSort {
   return PREDICT_SORTS.find((sort) => sort.id === id) ?? DEFAULT_PREDICT_SORT;
 }
 
-/** True when this event is a match's base result market rather than one of its six derivatives. */
-export function isMatchEvent(event: Pick<GammaEvent, "markets">): boolean {
-  return (event.markets ?? []).some((market) => market.sportsMarketType === MONEYLINE);
+/**
+ * Regroups a flat list of moneyline markets into one event per match, tagged
+ * with the league they were queried under, so `parseFixture` can read them.
+ */
+export function matchEventsFromMarkets(
+  markets: readonly GammaMarket[],
+  league: MainLeague,
+): GammaEvent[] {
+  const bySlug = new Map<string, GammaEvent>();
+
+  for (const market of markets) {
+    const parent = market.events?.[0];
+    if (!parent?.slug) continue;
+
+    let event = bySlug.get(parent.slug);
+    if (!event) {
+      event = {
+        id: parent.slug,
+        slug: parent.slug,
+        title: parent.title ?? "",
+        endDate: parent.endDate,
+        liquidity: Number(parent.liquidity ?? 0) || 0,
+        active: true,
+        closed: false,
+        tags: [{ id: String(league.tagId), label: league.label, slug: league.slug }],
+        markets: [],
+      };
+      bySlug.set(parent.slug, event);
+    }
+    event.markets.push(market);
+  }
+
+  return [...bySlug.values()];
 }
 
 /**

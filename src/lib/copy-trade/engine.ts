@@ -1,5 +1,6 @@
 import {
   FULL_EXIT_THRESHOLD,
+  MAX_COPY_AGE_SECONDS,
   MIN_COPY_USD,
   SETTLE_DELAY_SECONDS,
   type CopyBudgetState,
@@ -162,6 +163,10 @@ export function groupFillsIntoIntents(
  * `nextCursor` only ever advances to the newest intent actually returned, never
  * to the newest trade seen — otherwise the held-back tail would be skipped
  * permanently rather than picked up on the following tick.
+ *
+ * The one exception is a **stale buy** (older than `maxAgeSeconds`): it is
+ * dropped but still advances the cursor, so a backlog is skipped once rather
+ * than re-examined every tick. See {@link MAX_COPY_AGE_SECONDS}.
  */
 export function selectCopyableIntents(input: {
   trades: readonly TraderTrade[];
@@ -169,15 +174,20 @@ export function selectCopyableIntents(input: {
   nowSeconds: number;
   settleDelaySeconds?: number;
   groupWindowSeconds?: number;
+  maxAgeSeconds?: number;
 }): { intents: CopyIntent[]; nextCursor: number } {
   const settleDelay = input.settleDelaySeconds ?? SETTLE_DELAY_SECONDS;
   const horizon = input.nowSeconds - settleDelay;
+  const oldestBuy = input.nowSeconds - (input.maxAgeSeconds ?? MAX_COPY_AGE_SECONDS);
 
-  const intents = groupFillsIntoIntents(input.trades, input.groupWindowSeconds).filter(
+  const eligible = groupFillsIntoIntents(input.trades, input.groupWindowSeconds).filter(
     (intent) => intent.timestamp > input.cursor && intent.timestamp <= horizon,
   );
+  const intents = eligible.filter(
+    (intent) => intent.side !== "BUY" || intent.timestamp >= oldestBuy,
+  );
 
-  const nextCursor = intents.reduce((max, intent) => Math.max(max, intent.timestamp), input.cursor);
+  const nextCursor = eligible.reduce((max, intent) => Math.max(max, intent.timestamp), input.cursor);
 
   return { intents, nextCursor };
 }

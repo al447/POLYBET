@@ -37,18 +37,18 @@ describe("resolvePeriod", () => {
   });
 
   it("pins the API's own enum values, not our ids", () => {
-    // Verified live 2026-08-17 — these are the exact `timePeriod` values the
-    // endpoint accepts. `window` is not a parameter at all.
+    // Re-verified live 2026-11-19 on Data API v2 — the exact `time_period`
+    // values the endpoint accepts. `window` is not a parameter at all.
     expect(LEADERBOARD_PERIODS.map((period) => period.timePeriod)).toEqual([
-      "DAY",
-      "WEEK",
-      "MONTH",
-      "ALL",
+      "day",
+      "week",
+      "month",
+      "all",
     ]);
   });
 
   it("defaults to the week, which is what the copy-trade page's heading claims", () => {
-    expect(resolvePeriod(undefined).timePeriod).toBe("WEEK");
+    expect(resolvePeriod(undefined).timePeriod).toBe("week");
   });
 });
 
@@ -64,14 +64,14 @@ describe("resolveOrdering", () => {
   });
 
   it("pins the API's own enum values", () => {
-    expect(LEADERBOARD_ORDERINGS.map((ordering) => ordering.orderBy)).toEqual(["PNL", "VOL"]);
+    expect(LEADERBOARD_ORDERINGS.map((ordering) => ordering.sortBy)).toEqual(["PNL", "VOLUME"]);
   });
 });
 
 describe("isPeriodId / isOrderingId", () => {
   it("accepts declared ids and rejects everything else", () => {
     expect(isPeriodId("1w")).toBe(true);
-    expect(isPeriodId("WEEK")).toBe(false); // the wire value is not an id
+    expect(isPeriodId("week")).toBe(false); // the wire value is not an id
     expect(isPeriodId("")).toBe(false);
 
     expect(isOrderingId("volume")).toBe(true);

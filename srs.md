@@ -252,7 +252,7 @@ The source SRS is accurate on Builder tier limits and the 4% holding-rewards APY
 
 | ID | Requirement | Priority | Status |
 |---|---|---|---|
-| FR-8.1 | Monitor target "whale" wallets via Data API / on-chain events | Must | ✅ Data API `/trades` + `/positions` per followed trader, polled every 20s (`lib/copy-trade/trader-feed.ts`); fills grouped into intents so one order is copied once |
+| FR-8.1 | Monitor target "whale" wallets via Data API / on-chain events | Must | ✅ Data API `/v2/trades` + `/v2/positions` per followed trader (v1 retired 2026-11-02; migrated 2026-11-19), polled every 20s (`lib/copy-trade/trader-feed.ts`); fills grouped into intents so one order is copied once |
 | FR-8.2 | Users subscribe to a whale with an allocation cap | Must | ✅ Follow from `/leaderboard` or `/copy-trade`; per-trade, daily and total caps set in `FollowDialog`, stored per trader (`CopySettings`) |
 | FR-8.3 | Mirror trades proportionally with position sizing | Must | ✅ Fixed-dollar or percent-of-their-notional sizing; exits mirror the *fraction* they closed, not the share count (`decideCopy` / `decideExit`) |
 | FR-8.4 | Risk controls: slippage limits, max position, fee-aware balance checks | Must | ✅ 5% price band anchored on their fill and snapped to the market's tick; three caps; `requiredUsd` checks notional **+ fees**; market-settled and minimum-size checks re-read at click time |

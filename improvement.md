@@ -206,6 +206,8 @@ MAX_PAGES = 12  x  TOTAL_BUDGET_MS = 6s  =  72 seconds, one request, no ceiling
 
 Fixed by computing a deadline once before the loop and breaking on it — the same shape `gammaFetch` uses internally. On expiry it returns the fixtures collected so far rather than throwing: a partial board beats a 504. Pinned by `fixtures.test.ts`.
 
+> **Superseded 2026-11-20.** The events walk is gone: `fetchFixtures` now makes one parallel `/markets/keyset?sports_market_types=moneyline` call per main league (~300 KB each instead of ~11 MB per page), and `/predict-ai` renders dynamically rather than as ISR. See the Predict AI trap in CLAUDE.md.
+
 ⚠️ The deadline is checked **between** pages, so one in-flight call can overrun it by up to 6s. Worst case is ~16s, not 10s.
 
 ---
@@ -533,7 +535,7 @@ checkable and each one fails:
 | Fetches have no timeout | **All five have one.** `gamma.ts:616` via `AbortSignal.timeout`; `market-social.ts:61`, `price-history.ts:85`, `leaderboard.ts:63`, `withdraw.ts:209` via `AbortController` + `setTimeout` |
 | Polygon RPC calls hang | **Zero RPC calls.** `POLYGON_RPC_URL` appears once in all of `src/` — `lib/env.ts:27`, a type declaration never read |
 | Privy hangs `/api/auth/me` | Already capped at `timeout: 8_000, maxRetries: 1` (`lib/auth/privy.ts:50`) |
-| `/predict-ai` calls an AI API | It calls **Gamma**. `getCachedFixtures()` → `listEvents` → `gammaFetch`, bounded by a 10s loop deadline (`fixtures.ts:67,93`) and `withBudget` (`predict-ai/page.tsx:83`) |
+| `/predict-ai` calls an AI API | It calls **Gamma**. `getCachedFixtures()` → `listEvents` *(→ `listMarkets` per league since 2026-11-20)* → `gammaFetch`, bounded by a 10s loop deadline (`fixtures.ts:67,93`) and `withBudget` (`predict-ai/page.tsx:83`) |
 | Serve stale from R2 by hand | Broken three ways — see rule 4's table |
 | Add a post-deploy warmup | Exists, and its snippet would break the deploy — see rule 4's table |
 

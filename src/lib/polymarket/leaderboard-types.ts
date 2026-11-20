@@ -14,7 +14,7 @@ import { shortenAddress } from "@/lib/format";
  * One row of the leaderboard, normalised.
  *
  * Named for what the UI shows, not what the wire calls it: the API's
- * `proxyWallet` / `vol` become `address` / `volume`. The raw `userName` never
+ * `user_id` / `user_name` become `address` / `name`. The raw `user_name` never
  * escapes the parser — see `traderDisplayName` for why.
  */
 export type LeaderboardTrader = {
@@ -32,12 +32,12 @@ export type LeaderboardTrader = {
 /**
  * Leaderboard windows.
  *
- * 🚩 The query parameter is **`timePeriod`**, and `window` is not a parameter
- * at all. Verified live 2026-08-17: passing `window=1w` is accepted, silently
- * ignored, and returns the `DAY` default — so a "this week" board would quietly
- * be showing today's numbers with no error anywhere. Values are the exact
- * enum from `docs.polymarket.com/api-reference/core/get-trader-leaderboard-rankings.md`
- * and each was confirmed to return a genuinely different set of traders.
+ * 🚩 The query parameter is **`time_period`** on Data API v2, and `window` is
+ * not a parameter at all. Re-verified live 2026-11-19: `window=week` is still
+ * accepted, silently ignored, and returns the `day` default — so a "this week"
+ * board would quietly show today's numbers with no error anywhere. Values are
+ * the enum the v2 endpoint names in its own 400 (`day, week, month, all`), and
+ * each was confirmed to return a genuinely different set of traders.
  *
  * Ids travel as one opaque token, same discipline as `EVENT_SORTS` and
  * `PRICE_RANGES` — a caller must not be able to hand us a `timePeriod` string
@@ -45,10 +45,10 @@ export type LeaderboardTrader = {
  * to a handful of entries.
  */
 export const LEADERBOARD_PERIODS = [
-  { id: "1d", label: "Today", timePeriod: "DAY" },
-  { id: "1w", label: "This week", timePeriod: "WEEK" },
-  { id: "1m", label: "This month", timePeriod: "MONTH" },
-  { id: "all", label: "All time", timePeriod: "ALL" },
+  { id: "1d", label: "Today", timePeriod: "day" },
+  { id: "1w", label: "This week", timePeriod: "week" },
+  { id: "1m", label: "This month", timePeriod: "month" },
+  { id: "all", label: "All time", timePeriod: "all" },
 ] as const satisfies readonly { id: string; label: string; timePeriod: string }[];
 
 export type LeaderboardPeriod = (typeof LEADERBOARD_PERIODS)[number];
@@ -57,18 +57,18 @@ export type LeaderboardPeriodId = LeaderboardPeriod["id"];
 /** The copy-trade page advertises "Top traders this week", so the week is the default everywhere. */
 export const DEFAULT_PERIOD_ID: LeaderboardPeriodId = "1w";
 
-/** What the board is ranked by. `PNL` and `VOL` are the only two values the API accepts. */
+/** What the board is ranked by — v2's `sort_by`. v1's `VOL` is now a 400; it must be `VOLUME`. */
 export const LEADERBOARD_ORDERINGS = [
-  { id: "pnl", label: "Profit", orderBy: "PNL" },
-  { id: "volume", label: "Volume", orderBy: "VOL" },
-] as const satisfies readonly { id: string; label: string; orderBy: string }[];
+  { id: "pnl", label: "Profit", sortBy: "PNL" },
+  { id: "volume", label: "Volume", sortBy: "VOLUME" },
+] as const satisfies readonly { id: string; label: string; sortBy: string }[];
 
 export type LeaderboardOrdering = (typeof LEADERBOARD_ORDERINGS)[number];
 export type LeaderboardOrderingId = LeaderboardOrdering["id"];
 
 export const DEFAULT_ORDERING_ID: LeaderboardOrderingId = "pnl";
 
-/** The API's own ceiling — asking for 51 returns 50 (verified live 2026-08-17). */
+/** Our own page cap. v2 allows up to 1000, but nothing here renders more than 50. */
 export const LEADERBOARD_MAX_LIMIT = 50;
 
 // Looked up by id, not by index, so reordering the tabs can never silently

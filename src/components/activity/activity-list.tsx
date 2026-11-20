@@ -3,10 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import type { PaginationCursor } from "@polymarket/bindings";
-import type { Activity } from "@polymarket/bindings/data";
 
-import { describeActivityList, fetchActivityPage, type ActivityEntry } from "@/lib/polymarket/activity";
+import {
+  describeActivityList,
+  fetchActivityPage,
+  type ActivityEntry,
+  type ActivityRow,
+} from "@/lib/polymarket/activity";
 import type { BrowserClient } from "@/lib/polymarket/browser-client";
 import { Card } from "@/components/ui/primitives";
 
@@ -18,10 +21,10 @@ import { Card } from "@/components/ui/primitives";
  * feed that keeps growing under the scrollbar fights that rather than helping.
  * It also keeps the page's end reachable, which matters on mobile (NFR-4).
  *
- * Raw `Activity[]` is what lives in state; the flattened rows are derived on
+ * Raw `ActivityRow[]` is what lives in state; the flattened rows are derived on
  * render. That ordering matters — `describeActivityList` assigns keys with an
  * occurrence counter over the *whole* list (rows sharing a transaction hash are
- * otherwise indistinguishable, since `Activity` has no id), so appending a page
+ * otherwise indistinguishable, since rows have no id), so appending a page
  * has to re-key everything. Keeping the raw items is what makes that possible;
  * describing eagerly and re-describing later would silently mangle the rows.
  *
@@ -33,8 +36,8 @@ import { Card } from "@/components/ui/primitives";
  * a good way to render duplicates.
  */
 export function ActivityList({ client, revision }: { client: BrowserClient; revision: number }) {
-  const [activities, setActivities] = useState<Activity[] | null>(null);
-  const [cursor, setCursor] = useState<PaginationCursor | undefined>(undefined);
+  const [activities, setActivities] = useState<ActivityRow[] | null>(null);
+  const [cursor, setCursor] = useState<string | undefined>(undefined);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -18,27 +18,28 @@ import type {
 /**
  * Public trader leaderboard — who is up the most, and by how much.
  *
- * Verified live 2026-08-17 against `data-api.polymarket.com`, params
- * cross-checked with
- * `docs.polymarket.com/api-reference/core/get-trader-leaderboard-rankings.md`:
+ * 🚩 Data API v1 was retired 2026-11-02 — `/v1/leaderboard` is now a 410.
+ * Re-verified live 2026-11-19 against `data-api.polymarket.com/v2/openapi.json`:
  *
  * ```
- * GET /v1/leaderboard?timePeriod=WEEK&orderBy=PNL&limit=6
- *   → [{ rank:"1", proxyWallet:"0x04d5…66d8", userName:"WTSA", xUsername:"",
- *        verifiedBadge:false, vol:2339052.0, pnl:287429.03, profileImage:"" }]
+ * GET /v2/leaderboard?time_period=week&sort_by=PNL&limit=6
+ *   → { data: [{ rank:1, user_id:"0x2ecb…ecb8", user_name:"DrSlips", x_username:"",
+ *                verified:false, volume:617375.14, pnl:1555271.92, profile_image:"" }],
+ *       pagination: { limit, has_more, next_cursor } }
  * ```
+ *
+ * v2 pages by opaque cursor only and **400s on `offset`, even `offset=0`**, so
+ * nothing here sends one. Both consumers only ever want page 1.
  *
  * Server-side only, same rule as `gamma.ts` and `market-social.ts`: browsing
- * traffic stays off the user's IP and the results stay edge-cached. The
- * browser reaches this through `/api/leaderboard`.
+ * traffic stays off the user's IP and the results stay edge-cached.
  *
- * Three wire quirks the parser below absorbs, all measured on a 50-row sample:
+ * Wire quirks the parser below absorbs:
  *
- *  - **`rank` is a string** (`"1"`), not a number.
- *  - **`profileImage` is empty on 47 of 50 rows.** A letter-avatar fallback is
+ *  - **`profile_image` is empty on most rows.** A letter-avatar fallback is
  *    the normal case, not the edge case. The few that exist are all on the
  *    `polymarket-upload` S3 bucket already allowed by `next.config.ts`.
- *  - **`vol` is genuinely 0** for several top-PnL traders on the week board.
+ *  - **`volume` is genuinely 0** for several top-PnL traders on the week board.
  *    That is real data, not a missing field — the row still belongs on the
  *    board and should read `$0`.
  *
@@ -54,7 +55,6 @@ export type LeaderboardParams = {
   periodId?: LeaderboardPeriodId;
   orderingId?: LeaderboardOrderingId;
   limit?: number;
-  offset?: number;
 };
 
 /** Returns `null` rather than throwing — the caller decides how loud the failure is. */
@@ -78,7 +78,7 @@ async function dataApiFetch<T>(path: string): Promise<T | null> {
 /**
  * Top traders for one period and ordering.
  *
- * Period and ordering arrive as **ids**, never as raw `timePeriod`/`orderBy`
+ * Period and ordering arrive as **ids**, never as raw `time_period`/`sort_by`
  * strings — see `leaderboard-types.ts` for why that boundary matters here
  * specifically (`window=` is silently ignored by this endpoint, so a wrong
  * parameter name produces plausible data for the wrong window rather than an
@@ -90,16 +90,15 @@ export async function fetchLeaderboard(
   const period = resolvePeriod(params.periodId);
   const ordering = resolveOrdering(params.orderingId);
   const limit = Math.min(Math.max(1, Math.trunc(params.limit ?? 25)), LEADERBOARD_MAX_LIMIT);
-  const offset = Math.max(0, Math.trunc(params.offset ?? 0));
 
   const query = new URLSearchParams({
-    timePeriod: period.timePeriod,
-    orderBy: ordering.orderBy,
+    time_period: period.timePeriod,
+    sort_by: ordering.sortBy,
     limit: String(limit),
-    offset: String(offset),
   });
 
-  const data = await dataApiFetch<unknown[]>(`/v1/leaderboard?${query.toString()}`);
+  const payload = await dataApiFetch<{ data?: unknown }>(`/v2/leaderboard?${query.toString()}`);
+  const data = payload?.data;
   if (!Array.isArray(data)) return [];
 
   const traders: LeaderboardTrader[] = [];
@@ -107,24 +106,24 @@ export async function fetchLeaderboard(
     if (typeof entry !== "object" || entry === null) return;
     const row = entry as Record<string, unknown>;
 
-    const address = typeof row.proxyWallet === "string" ? row.proxyWallet : null;
+    const address = typeof row.user_id === "string" ? row.user_id : null;
     if (!address) return;
 
-    // `rank` arrives as a string. Falling back to position-in-page keeps the
-    // badge sensible if the field is ever missing, and honours `offset` so
-    // page 2 starts at 26 rather than restarting at 1.
     const parsedRank = Number(row.rank);
-    const rank = Number.isFinite(parsedRank) && parsedRank > 0 ? parsedRank : offset + index + 1;
+    const rank = Number.isFinite(parsedRank) && parsedRank > 0 ? parsedRank : index + 1;
 
     traders.push({
       rank,
       address,
-      name: traderDisplayName(typeof row.userName === "string" ? row.userName : undefined, address),
+      name: traderDisplayName(
+        typeof row.user_name === "string" ? row.user_name : undefined,
+        address,
+      ),
       avatar:
-        typeof row.profileImage === "string" && row.profileImage ? row.profileImage : undefined,
-      verified: row.verifiedBadge === true,
+        typeof row.profile_image === "string" && row.profile_image ? row.profile_image : undefined,
+      verified: row.verified === true,
       pnl: toNumber(row.pnl),
-      volume: toNumber(row.vol),
+      volume: toNumber(row.volume),
     });
   });
 

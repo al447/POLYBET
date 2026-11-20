@@ -98,8 +98,7 @@ export function CopyStats({ ledger }: Props) {
       try {
         const positions = await listPortfolioPositions(client);
         const copiedTokens = new Set(marketKey.split(","));
-        // `tokenId`, not `asset` — see the note in `readOurShares`. The SDK's
-        // `Position` and the Data API's raw rows name this field differently.
+        // `tokenId`, not the wire's `token_id` — see `readOurShares`.
         const mine = positions.filter((p) => p.tokenId && copiedTokens.has(p.tokenId));
         const summary = summarizePositions(mine);
         if (cancelled) return;

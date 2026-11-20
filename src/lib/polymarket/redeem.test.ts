@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Position } from "@polymarket/bindings/data";
+import type { PortfolioPosition } from "./portfolio";
 
 import { groupRedeemable, totalClaimable } from "./redeem";
 
 /**
- * Only the fields `groupRedeemable` reads are set — the rest of `Position` is
+ * Only the fields `groupRedeemable` reads are set — the rest of `PortfolioPosition` is
  * branded/optional and irrelevant here, so fixtures cast through `unknown`
  * rather than restating the whole schema (same approach as `portfolio.test.ts`).
  */
@@ -19,8 +19,8 @@ type Fields = Partial<{
   eventSlug: string | null;
 }>;
 
-function position(fields: Fields): Position {
-  return fields as unknown as Position;
+function position(fields: Fields): PortfolioPosition {
+  return fields as unknown as PortfolioPosition;
 }
 
 describe("groupRedeemable", () => {

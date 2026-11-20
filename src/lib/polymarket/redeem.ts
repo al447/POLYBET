@@ -1,4 +1,4 @@
-import type { Position } from "@polymarket/bindings/data";
+import type { PortfolioPosition } from "./portfolio";
 
 import type { BrowserClient } from "./browser-client";
 
@@ -59,7 +59,7 @@ export type RedeemableMarket = {
  *
  * **Deliberately does not filter on payout.** A resolved market where the user
  * held only the losing side claims $0, and hiding those would be tidier — but
- * every money field on `Position` is `DecimalString | null | undefined`, so a
+ * every money field is coerced to a number on the way in, so a
  * payout that reads as 0 is indistinguishable from a payout the API simply
  * didn't return. Hiding a real claim because a field was null is a much worse
  * failure than showing a $0.00 row the user can ignore, so the figure is
@@ -69,7 +69,7 @@ export type RedeemableMarket = {
  * ⚠️ Values here are **human decimals** from the Data API, not 6-decimal base
  * units. Do not run them through `fees.ts`'s `fromBaseUnits`.
  */
-export function groupRedeemable(positions: Position[]): RedeemableMarket[] {
+export function groupRedeemable(positions: PortfolioPosition[]): RedeemableMarket[] {
   const groups = new Map<string, RedeemableMarket>();
 
   for (const position of positions) {

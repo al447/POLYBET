@@ -111,6 +111,9 @@ export async function listMarkets(
     closed: params.closed,
     order: params.order,
     ascending: params.ascending,
+    sports_market_types: params.sportsMarketTypes,
+    end_date_min: params.endDateMin,
+    end_date_max: params.endDateMax,
   });
   const data = await gammaFetch<{ markets: GammaMarket[]; next_cursor?: string }>(
     `/markets/keyset?${query}`,
@@ -218,6 +221,8 @@ const LIST_MARKET_FIELDS: Record<keyof GammaMarket, boolean> = {
   // /market/[slug], which is served by getCachedEventBySlug, not this cache.
   description: false,
   resolutionSource: false,
+  // already nested under its event in these listings
+  events: false,
 };
 
 /** Event-level fields. Everything is kept — the weight is all in `markets`. */
@@ -614,7 +619,8 @@ async function gammaFetch<T>(path: string): Promise<T> {
     try {
       const response = await fetch(url, {
         signal: AbortSignal.timeout(remaining),
-        headers: { accept: "application/json" },
+        // gamma 406s event pages over 50 rows without gzip
+        headers: { accept: "application/json", "accept-encoding": "gzip" },
       });
 
       if (response.ok) return (await response.json()) as T;

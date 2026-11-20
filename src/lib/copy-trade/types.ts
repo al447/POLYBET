@@ -94,6 +94,24 @@ export const MIN_COPY_USD = 5;
 export const SETTLE_DELAY_SECONDS = 5;
 
 /**
+ * A buy older than this is never copied — the cursor moves past it instead.
+ *
+ * Added 2026-11-19 after the Data API v1 retirement froze every follower's
+ * cursor for 17 days: on recovery, a trader's last 100 trades would all have
+ * queued at stale prices, and queued buys count toward the daily cap, so the
+ * backlog would crowd out the trades that were actually live. The same thing
+ * happens on a smaller scale after a laptop wakes from sleep.
+ *
+ * Sells are exempt on purpose: a late exit still reduces exposure the trader
+ * has already dropped, and exits never spend the daily budget.
+ *
+ * Matches `QUEUE_EXPIRY_MS` (10 min) — a copy too old to sit in the queue is
+ * too old to enter it. A literal rather than derived, because that constant is
+ * declared further down this module.
+ */
+export const MAX_COPY_AGE_SECONDS = 10 * 60;
+
+/**
  * A sell that closes at least this fraction of their position is treated as a
  * full exit of ours.
  *
@@ -122,19 +140,18 @@ export const FULL_EXIT_THRESHOLD = 0.98;
 export const QUEUE_EXPIRY_MS = 10 * 60 * 1000;
 
 /**
- * One trade by a followed trader, normalised from `data-api.polymarket.com/v1`
- * `/trades?user=<addr>`.
+ * One trade by a followed trader, normalised from `data-api.polymarket.com`
+ * `/v2/trades?user=<addr>`.
  *
- * Field names are ours, not the wire's — `asset` becomes `tokenId` because that
- * is what `placeMarketBuy` calls it, and reading `asset` at an order call site
- * invites passing the wrong id. Verified shape 2026-08-17; see
+ * Field names are ours, not the wire's — `token_id` becomes `tokenId` because
+ * that is what `placeMarketBuy` calls it. Verified shape 2026-11-19; see
  * `trader-feed.ts` for the parser.
  */
 export type TraderTrade = {
-  /** The trader's `proxyWallet`. */
+  /** The trader's `proxy_wallet`. */
   address: string;
   side: "BUY" | "SELL";
-  /** CLOB token id — one side of one market. The `asset` field on the wire. */
+  /** CLOB token id — one side of one market. The `token_id` field on the wire. */
   tokenId: string;
   conditionId: string;
   /** Outcome tokens, human decimals. */

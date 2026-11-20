@@ -1,44 +1,34 @@
-import type { PaginationCursor } from "@polymarket/bindings";
-import type { Activity } from "@polymarket/bindings/data";
-
 import type { BrowserClient } from "./browser-client";
+import { fetchDataApiPage } from "./data-api";
 
 /**
  * Trade history / account activity (FR-4.4, implementation.md Step 4.2's
  * deferred half).
  *
- * Browser-side against the user's own authenticated client, for the same
- * structural reason as `portfolio.ts` and `redeem.ts`: `ListActivityRequest`
- * requires a `user` address and that address is the *Deposit Wallet*, which the
- * server never learns. `SecureClient.listActivity()` defaults it to its own
- * account.
+ * Browser-side, for the same structural reason as `portfolio.ts` and
+ * `redeem.ts`: the feed is keyed by the *Deposit Wallet*, which the server
+ * never learns. The browser client knows it as `client.account.wallet`.
  *
- * **The whole difficulty here is that `Activity` is a nine-variant union** and
- * the variants genuinely disagree about what fields exist — a REWARD credit has
- * no market, title, icon or condition id at all, and a Combo trade has no
- * `outcome`/`slug`/`eventSlug` where a CLOB trade does. `describeActivity`
- * collapses all nine into one flat renderable row so no component has to narrow
- * the union itself. It is pure, so the interesting part is unit-tested without a
- * network.
+ * 🚩 Reads `/v2/activity` directly, not `client.listActivity()`. The pinned SDK
+ * (0.2.0) still calls the retired Data API v1, which has answered 410 since
+ * 2026-11-02 — see `data-api.ts`. Verified live 2026-11-19:
  *
- * Two SDK details that shape this file:
+ *  - v2 serves **one flat row shape** with a `type` string, where the SDK had a
+ *    nine-variant union. Credits (`REWARD`, `MAKER_REBATE`, …) arrive with an
+ *    empty title, condition and token; `describeActivity` drops those.
+ *  - The amount is **`usdc_size`** for every type. A losing redeem is a real 0.
+ *  - **`TAKER_REBATE`** is a live type the SDK never had. Unknown types render
+ *    as a neutral row under their own name, never as a trade — the old
+ *    fall-through-to-trade default would have shown a rebate as "Bought".
+ *  - Timestamps are epoch **seconds** on the wire and milliseconds here.
+ *  - Only `TIMESTAMP DESC` sorting is accepted.
  *
- *  1. ⚠️ **`Activity` carries no `id`.** Only `ComboActivity` does. A
- *     transaction hash is *not* unique either — one transaction routinely emits
- *     several activity rows (a trade filling against multiple makers, a batched
- *     operation). Keys are therefore composed at list level with an occurrence
- *     counter; see `describeActivityList`.
- *  2. `type` discriminates the union, but the TRADE variant types it as the
- *     `ActivityType` **enum member** while the other eight use plain string
- *     literals. TypeScript treats string enums as nominal, so
- *     `activity.type === "TRADE"` is a compile error. Switching on the eight
- *     literals and letting `default` narrow to the trade sidesteps that *and*
- *     avoids a value import of `@polymarket/bindings/data`, which would drag
- *     that module's zod schemas into the client bundle for the sake of one enum
- *     comparison. The bundle is already ~48% of the paid cap.
+ * ⚠️ **Rows carry no id**, and a transaction hash is not unique either — one
+ * transaction routinely emits several rows. Keys are composed at list level
+ * with an occurrence counter; see `describeActivityList`.
  *
- * ⚠️ Amounts are **human decimals** from the Data API, not 6-decimal base
- * units. Do not run them through `fees.ts`'s `fromBaseUnits`.
+ * ⚠️ Amounts are **human decimals**, not 6-decimal base units. Do not run them
+ * through `fees.ts`'s `fromBaseUnits`.
  */
 
 /** Coarse grouping for rendering — finer than "everything is a row", coarser than nine variants. */
@@ -55,7 +45,7 @@ export type ActivityKind = "trade" | "settlement" | "credit";
 export type ActivityDirection = "in" | "out" | "neutral";
 
 export type ActivityEntry = {
-  /** Composed, not from the API — `Activity` has no id. Stable within one list. */
+  /** Composed, not from the API — rows have no id. Stable within one list. */
   key: string;
   kind: ActivityKind;
   /** Human label: "Bought", "Redeemed", "Maker rebate", … */
@@ -80,13 +70,70 @@ export type ActivityEntry = {
   transactionHash: string;
 };
 
+/** One `/v2/activity` row, normalised. What lives in component state. */
+export type ActivityRow = {
+  type: string;
+  isCombo: boolean;
+  side: string;
+  /** `size` on the wire — always shares, never USD. */
+  shares: number;
+  /** `usdc_size` on the wire. */
+  amount: number;
+  price: number;
+  title: string | null;
+  icon: string | null;
+  eventSlug: string | null;
+  outcome: string | null;
+  /** Unix epoch milliseconds. */
+  timestamp: number;
+  transactionHash: string;
+};
+
+/** Normalises `/v2/activity` rows. Exported for testing. */
+export function parseActivityRows(rows: unknown[]): ActivityRow[] {
+  const parsed: ActivityRow[] = [];
+
+  for (const entry of rows) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const row = entry as Record<string, unknown>;
+
+    const type = typeof row.type === "string" ? row.type.toUpperCase() : "";
+    if (!type) continue;
+
+    parsed.push({
+      type,
+      isCombo: row.is_combo === true,
+      side: typeof row.side === "string" ? row.side.toUpperCase() : "",
+      shares: toNumber(row.size),
+      amount: toNumber(row.usdc_size),
+      price: toNumber(row.price),
+      title: text(row.title),
+      icon: text(row.icon),
+      eventSlug: text(row.event_slug),
+      outcome: text(row.outcome),
+      timestamp: toNumber(row.timestamp) * 1000,
+      transactionHash: text(row.transaction_hash) ?? "",
+    });
+  }
+
+  return parsed;
+}
+
+const CREDIT_LABELS: Record<string, string> = {
+  REWARD: "Reward",
+  MAKER_REBATE: "Maker rebate",
+  TAKER_REBATE: "Taker rebate",
+  REFERRAL_REWARD: "Referral reward",
+  YIELD: "Yield",
+};
+
 /**
  * Flattens one activity into a renderable row, minus the key (which needs
  * list context to disambiguate — see `describeActivityList`).
  *
  * Exported for testing; components should use `describeActivityList`.
  */
-export function describeActivity(activity: Activity): Omit<ActivityEntry, "key"> {
+export function describeActivity(activity: ActivityRow): Omit<ActivityEntry, "key"> {
   const base = {
     title: null as string | null,
     icon: null as string | null,
@@ -95,95 +142,53 @@ export function describeActivity(activity: Activity): Omit<ActivityEntry, "key">
     side: null as "BUY" | "SELL" | null,
     shares: null as number | null,
     price: null as number | null,
-    timestamp: Number(activity.timestamp),
-    transactionHash: String(activity.transactionHash),
+    amount: activity.amount,
+    timestamp: activity.timestamp,
+    transactionHash: activity.transactionHash,
   };
+  const market = { title: activity.title, icon: activity.icon, eventSlug: activity.eventSlug };
+
+  const credit = CREDIT_LABELS[activity.type];
+  if (credit) {
+    // Account-level credits belong to no market.
+    return { ...base, kind: "credit", label: credit, direction: "in" };
+  }
 
   switch (activity.type) {
-    case "SPLIT":
+    case "TRADE": {
+      const isBuy = activity.side === "BUY";
       return {
         ...base,
-        kind: "settlement",
-        label: "Split",
-        title: activity.title,
-        icon: activity.icon,
-        eventSlug: activity.eventSlug,
-        // Collateral goes *into* a complete set, so it leaves the cash balance.
-        amount: toNumber(activity.amount),
-        direction: "out",
-      };
-
-    case "MERGE":
-      return {
-        ...base,
-        kind: "settlement",
-        label: "Merged",
-        title: activity.title,
-        icon: activity.icon,
-        eventSlug: activity.eventSlug,
-        amount: toNumber(activity.amount),
-        direction: "in",
-      };
-
-    case "REDEEM":
-      return {
-        ...base,
-        kind: "settlement",
-        label: "Redeemed",
-        title: activity.title,
-        icon: activity.icon,
-        eventSlug: activity.eventSlug,
-        amount: toNumber(activity.amount),
-        direction: "in",
-      };
-
-    case "CONVERSION":
-      return {
-        ...base,
-        kind: "settlement",
-        label: "Converted",
-        title: activity.title,
-        icon: activity.icon,
-        eventSlug: activity.eventSlug,
-        amount: toNumber(activity.amount),
-        direction: "neutral",
-      };
-
-    // The four account-level credits carry an amount and nothing else — no
-    // market, no title, no condition id.
-    case "REWARD":
-      return { ...base, kind: "credit", label: "Reward", amount: toNumber(activity.amount), direction: "in" };
-
-    case "MAKER_REBATE":
-      return { ...base, kind: "credit", label: "Maker rebate", amount: toNumber(activity.amount), direction: "in" };
-
-    case "REFERRAL_REWARD":
-      return { ...base, kind: "credit", label: "Referral reward", amount: toNumber(activity.amount), direction: "in" };
-
-    case "YIELD":
-      return { ...base, kind: "credit", label: "Yield", amount: toNumber(activity.amount), direction: "in" };
-
-    default: {
-      // Narrows to TradeActivity — see the enum note in the module docstring.
-      const trade = activity;
-      const isBuy = trade.side === "BUY";
-      return {
-        ...base,
+        ...market,
         kind: "trade",
         label: isBuy ? "Bought" : "Sold",
-        title: trade.title,
-        icon: trade.icon,
-        // Combo trades have no market/event slug or outcome label at all, so
-        // they render unlinked rather than pointing at a URL that can't resolve.
-        eventSlug: trade.isCombo ? null : trade.eventSlug,
-        outcome: trade.isCombo ? null : trade.outcome,
+        // Combo trades have no event page or single outcome, so they render
+        // unlinked rather than pointing at a URL that can't resolve.
+        eventSlug: activity.isCombo ? null : activity.eventSlug,
+        outcome: activity.isCombo ? null : activity.outcome,
         side: isBuy ? "BUY" : "SELL",
-        shares: toNumber(trade.shares),
-        price: toNumber(trade.price),
-        amount: toNumber(trade.amount),
+        shares: activity.shares,
+        price: activity.price,
         direction: isBuy ? "out" : "in",
       };
     }
+
+    // Collateral goes *into* a complete set, so it leaves the cash balance.
+    case "SPLIT":
+      return { ...base, ...market, kind: "settlement", label: "Split", direction: "out" };
+
+    case "MERGE":
+      return { ...base, ...market, kind: "settlement", label: "Merged", direction: "in" };
+
+    case "REDEEM":
+      return { ...base, ...market, kind: "settlement", label: "Redeemed", direction: "in" };
+
+    case "CONVERSION":
+      return { ...base, ...market, kind: "settlement", label: "Converted", direction: "neutral" };
+
+    default:
+      // Unsigned, because guessing a direction would be inventing a fact.
+      return { ...base, ...market, kind: "settlement", label: humanise(activity.type), direction: "neutral" };
   }
 }
 
@@ -192,12 +197,12 @@ export function describeActivity(activity: Activity): Omit<ActivityEntry, "key">
  * assigns each a stable key.
  *
  * Keys compose `transactionHash` + `type` + an occurrence counter rather than
- * using either alone, because **neither is unique**: `Activity` has no id
- * field, and a single transaction routinely produces several rows. The counter
+ * using either alone, because **neither is unique**: rows have no id field,
+ * and a single transaction routinely produces several rows. The counter
  * is what keeps two identical fills in one transaction from colliding, which
  * would make React drop a row.
  */
-export function describeActivityList(activities: Activity[]): ActivityEntry[] {
+export function describeActivityList(activities: ActivityRow[]): ActivityEntry[] {
   const seen = new Map<string, number>();
 
   return activities.map((activity) => {
@@ -210,19 +215,9 @@ export function describeActivityList(activities: Activity[]): ActivityEntry[] {
 }
 
 export type ActivityPage = {
-  items: Activity[];
-  /**
-   * Pass back to `fetchActivityPage` to continue. `undefined` when the feed is
-   * exhausted. Kept as the SDK's branded `PaginationCursor` rather than widened
-   * to `string` — widening would only force a cast back at the call site.
-   */
-  nextCursor: PaginationCursor | undefined;
-  /**
-   * ⚠️ Optimistic. The SDK documents that a full page reports `true` even when
-   * the collection ended exactly on a page boundary, and the follow-up request
-   * then returns an empty page. So a "Load more" driven by this can produce one
-   * final no-op click; treat it as "maybe more", never as "definitely more".
-   */
+  items: ActivityRow[];
+  /** Pass back to `fetchActivityPage` to continue. `undefined` when the feed is exhausted. */
+  nextCursor: string | undefined;
   hasMore: boolean;
 };
 
@@ -231,32 +226,42 @@ const PAGE_SIZE = 25;
 /**
  * One page of the authenticated account's activity, newest first.
  *
- * `user` is deliberately not passed — `SecureClient` defaults it to its own
- * account, which is the Deposit Wallet we want and the only one we can name.
+ * The same filters go with every page, cursor or not, so a later page can
+ * never be asked a different question than the first one.
+ * Deposits and withdrawals stay excluded, as they always were under the SDK.
  */
 export async function fetchActivityPage(
   client: BrowserClient,
-  cursor?: PaginationCursor,
+  cursor?: string,
 ): Promise<ActivityPage> {
-  const paginator = client.listActivity({
-    pageSize: PAGE_SIZE,
-    sortBy: "TIMESTAMP",
-    sortDirection: "DESC",
+  const page = await fetchDataApiPage("/v2/activity", {
+    user: client.account.wallet,
+    limit: String(PAGE_SIZE),
+    sort_by: "TIMESTAMP",
+    sort_direction: "DESC",
+    exclude_deposits_withdrawals: "true",
+    cursor,
   });
 
-  const page = cursor
-    ? await paginator.from(cursor).firstPage()
-    : await paginator.firstPage();
-
   return {
-    items: page.items,
-    nextCursor: page.nextCursor,
+    items: parseActivityRows(page.rows),
+    nextCursor: page.nextCursor ?? undefined,
     hasMore: page.hasMore,
   };
 }
 
-function toNumber(value: string | number | null | undefined): number {
-  if (value === null || value === undefined) return 0;
+function toNumber(value: unknown): number {
+  if (value === null || value === undefined || value === "") return 0;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value ? value : null;
+}
+
+/** `DIRECTIONAL_SPLIT` → `Directional split`. */
+function humanise(type: string): string {
+  const words = type.toLowerCase().replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
 }

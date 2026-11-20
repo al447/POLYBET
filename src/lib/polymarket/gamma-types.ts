@@ -48,7 +48,9 @@ export const TOP_CATEGORIES: GammaTag[] = [
   { id: "1", label: "Sports", slug: "sports" },
   { id: "21", label: "Crypto", slug: "crypto" },
   { id: "596", label: "Culture", slug: "pop-culture" },
-  { id: "315", label: "Entertainment", slug: "entertainment" },
+  // replaced Entertainment (315) on 2026-11-20, Gamma force-hides it and it has no live events
+  { id: "64", label: "Esports", slug: "esports" },
+  { id: "36", label: "Gaming", slug: "gaming" },
   { id: "107", label: "Business", slug: "business" },
   { id: "100328", label: "Economy", slug: "economy" },
   { id: "1401", label: "Tech", slug: "tech" },
@@ -130,6 +132,8 @@ export type GammaMarket = {
    * probability.
    */
   umaResolutionStatuses?: string;
+  /** Parent event, as Gamma nests it on market listings. */
+  events?: Pick<GammaEvent, "slug" | "title" | "endDate" | "liquidity">[];
 };
 
 /**
@@ -403,6 +407,9 @@ export type ListMarketsParams = {
   closed?: boolean;
   order?: string;
   ascending?: boolean;
+  sportsMarketTypes?: string;
+  endDateMin?: string;
+  endDateMax?: string;
 };
 
 /** Parses Gamma's JSON-encoded-string array fields (`outcomes`, `outcomePrices`, `clobTokenIds`). */

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 
 import { requireUser, UnauthorizedError } from "@/lib/auth/session";
 import { MissingBuilderCredentialsError, resolveBuilderAuth } from "@/lib/polymarket/builder";
+import { isSignablePath } from "@/lib/polymarket/builder-sign-allowlist";
 import { serverEnv } from "@/lib/env";
 
 /**
@@ -20,11 +21,10 @@ import { serverEnv } from "@/lib/env";
  *
  * ⚠️ Residual exposure, accepted deliberately: the contract requires returning
  * the API key and passphrase so the client can set its headers. Any signed-in
- * user can therefore read them. They are useless for forging new requests
- * (that needs the secret), but they do identify our builder account. Mitigations
- * here: authentication is mandatory, and each call is one signature for one
- * request path. If these are ever abused, rotate P-2..P-4 with
- * `npm run builder:provision -- derive-keys`.
+ * user can therefore read them, and can ask this route for a signature. So
+ * only the method/path pairs the SDK's flows need are signed (see
+ * `builder-sign-allowlist.ts`); request bodies are not restricted. If this is
+ * ever abused, rotate P-2..P-4 with `npm run builder:provision -- derive-keys`.
  *
  * The wire contract (request `{body, method, path}` → the four `POLY_BUILDER_*`
  * fields) is fixed by the SDK, not by us. See `buildHmacSignature`'s docstring.
@@ -53,6 +53,14 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { error: "invalid_request", message: "`method` and `path` are required." },
         { status: 400 },
+      );
+    }
+
+    if (!isSignablePath(method, path, env.POLYMARKET_BUILDER_CODE)) {
+      console.warn("builder/sign rejected", { method, path: path.slice(0, 200) });
+      return NextResponse.json(
+        { error: "path_not_allowed" },
+        { status: 403, headers: { "cache-control": "no-store" } },
       );
     }
 
